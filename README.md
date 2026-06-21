@@ -103,7 +103,7 @@ argus-zig/
 
 ## License
 
-AGPLv3 — same license as Flock-You, Komun, and Sweeet.
+AGPLv3.
 You can use it, modify it, and sell devices running it,
 as long as you share your changes under the same license.
 
