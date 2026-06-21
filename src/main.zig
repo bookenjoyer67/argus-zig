@@ -82,6 +82,13 @@ const GPIO_PULLUP_ONLY: u32 = 4;
 // FreeRTOS tick period: 10ms on ESP-IDF default config
 const portTICK_PERIOD_MS: u32 = 10;
 
+// OLED I2C helpers — thin C wrappers in main/main.c
+// oled_i2c_init configures I2C port 0 on GPIO 17/18 at 400kHz.
+// oled_i2c_write prepends a control byte (0x00=cmd, 0x40=data) and transmits.
+// Both return 0 on success, negative on error.
+extern fn oled_i2c_init() i32;
+extern fn oled_i2c_write(control_byte: u8, data: [*]const u8, len: u32) i32;
+
 // ================================================================
 // HELTEC V3 PIN DEFINITIONS
 // ================================================================
@@ -494,23 +501,45 @@ fn oledDrawBar(x: u8, y: u8, w: u8, h: u8, pct: u8) void {
     }
 }
 
+/// Send SSD1306 initialization sequence.
+/// Must be called after oled_i2c_init() succeeds and OLED RST is released.
+/// The 26-byte sequence configures clock, mux ratio, charge pump,
+/// orientation, contrast, and turns the display on.
+fn oledInit() void {
+    const init_seq = [_]u8{
+        0xAE,           // Display OFF (sleep mode)
+        0xD5, 0x80,     // Set display clock divide ratio/oscillator frequency
+        0xA8, 0x3F,     // Set multiplex ratio to 63 (64 rows)
+        0xD3, 0x00,     // Set display offset = 0
+        0x40,           // Set display start line to 0
+        0x8D, 0x14,     // Enable charge pump regulator
+        0x20, 0x00,     // Set memory addressing mode to horizontal
+        0xA1,           // Set segment re-map (column 127 = SEG0)
+        0xC8,           // Set COM output scan direction (remapped)
+        0xDA, 0x12,     // Set COM pins hardware configuration
+        0x81, 0xCF,     // Set contrast control
+        0xD9, 0xF1,     // Set pre-charge period
+        0xDB, 0x40,     // Set VCOMH deselect level
+        0xA4,           // Entire display ON (resume to RAM content)
+        0xA6,           // Set normal display (not inverted)
+        0xAF,           // Display ON
+    };
+    _ = oled_i2c_write(0x00, &init_seq, init_seq.len);
+}
+
 /// Transmit the display buffer to the SSD1306 over I2C.
-///
-/// PLACEHOLDER — not yet implemented. The buffer is drawn in memory
-/// but not sent to the physical display. To complete:
-///
-///   1. Initialize I2C master on GPIO 17/18:
-///      i2c_master_bus_config_t cfg = { .sda_io_num = 17, .scl_io_num = 18, ... };
-///   2. Send SSD1306 init sequence (set mux ratio, display offset, clock divide,
-///      charge pump, COM pins, contrast, pre-charge, VCOM detect, display ON)
-///   3. For each of 8 pages:
-///      - Send command: 0xB0 + page (set page address)
-///      - Send command: 0x00 (set low column = 0)
-///      - Send command: 0x10 (set high column = 0)
-///      - Send 128 bytes from oled_buf[page*128 .. (page+1)*128]
+/// Sends 8 pages of 128 bytes each. Each page is preceded by
+/// three command bytes: set page address (0xB0+page),
+/// set low column (0x00), set high column (0x10).
 fn oledUpdate() void {
-    // Placeholder — I2C driver will be added via extern fn i2c_master_write()
-    _ = &oled_buf;
+    var page: u8 = 0;
+    while (page < 8) : (page += 1) {
+        const cmds = [_]u8{ 0xB0 + page, 0x00, 0x10 };
+        _ = oled_i2c_write(0x00, &cmds, cmds.len);
+
+        const page_start: usize = @as(usize, page) * @as(usize, OLED_WIDTH);
+        _ = oled_i2c_write(0x40, oled_buf[page_start..][0..OLED_WIDTH].ptr, OLED_WIDTH);
+    }
 }
 
 // ================================================================
@@ -615,12 +644,30 @@ export fn zig_main() callconv(.c) void {
     buzzerTone(1500, 80);
 
     // --- Display init ---
-    // Clear the framebuffer and draw the summary page.
-    // The physical OLED won't show anything until oledUpdate()
-    // has a working I2C driver, but the buffer is correct.
+    // Reset the SSD1306 via GPIO 21, then initialize I2C and send
+    // the init sequence. If I2C init fails, blink LED 3x fast and
+    // continue headless — the device works without the OLED.
+    //
+    // Timing: RST low for 10ms ensures a clean reset regardless of
+    // power-on state. 10ms post-reset lets the SSD1306 stabilize
+    // before we start sending commands.
 
-    oledClear();
-    drawPage();
+    _ = gpio_set_direction(PIN_OLED_RST, GPIO_MODE_OUTPUT);
+    _ = gpio_set_level(PIN_OLED_RST, 0);   // hold in reset
+    delayMs(10);
+    _ = gpio_set_level(PIN_OLED_RST, 1);   // release reset
+    delayMs(10);
+
+    if (oled_i2c_init() != 0) {
+        // OLED not responding — blink LED 3x fast, continue headless
+        ledOn();  delayMs(50); ledOff(); delayMs(50);
+        ledOn();  delayMs(50); ledOff(); delayMs(50);
+        ledOn();  delayMs(50); ledOff();
+    } else {
+        oledInit();
+        oledClear();
+        drawPage();
+    }
 
     // ================================================================
     // MAIN LOOP
