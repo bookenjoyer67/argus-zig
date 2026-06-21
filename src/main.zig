@@ -59,25 +59,27 @@ const std = @import("std");
 // The extern signatures must match the ESP-IDF ABI exactly.
 // Return types are c_int (i32 on Xtensa), parameters are u32 for GPIO nums.
 
-/// Set GPIO direction: GPIO_MODE_OUTPUT (2) or GPIO_MODE_INPUT (1)
-extern fn gpio_set_direction(gpio_num: u32, mode: u32) i32;
+/// Configure a single GPIO pin: direction, pull resistor, interrupt (disabled).
+/// mode: 0=INPUT, 1=OUTPUT.  pull: 0=NONE, 1=UP, 2=DOWN.
+/// Wraps ESP-IDF gpio_config() — a real ABI symbol, unlike gpio_set_pull_mode
+/// which is inlined in v5.4 headers and resolves to garbage at link time.
+extern fn gpio_pin_init(pin: u32, mode: u32, pull: u32) i32;
 
-/// Set GPIO output level: 1 = HIGH, 0 = LOW
-extern fn gpio_set_level(gpio_num: u32, level: u32) i32;
+/// Set GPIO output level: 0 = LOW, 1 = HIGH
+extern fn gpio_write(pin: u32, level: u32) i32;
 
-/// Read GPIO input level
-extern fn gpio_get_level(gpio_num: u32) i32;
-
-/// Configure pull-up/pull-down: GPIO_PULLUP_ONLY (4), GPIO_PULLDOWN_ONLY (5), etc.
-extern fn gpio_set_pull_mode(gpio_num: u32, mode: u32) i32;
+/// Read GPIO input level. Returns 0 (LOW) or 1 (HIGH).
+extern fn gpio_read(pin: u32) i32;
 
 /// FreeRTOS delay: blocks calling task for (ticks * portTICK_PERIOD_MS) milliseconds
 extern fn vTaskDelay(ticks: u32) void;
 
-// ESP-IDF gpio_mode_t constants (from hal/gpio_types.h)
-const GPIO_MODE_OUTPUT: u32 = 2;
-const GPIO_MODE_INPUT: u32  = 1;
-const GPIO_PULLUP_ONLY: u32 = 4;
+// GPIO mode/pull constants for gpio_pin_init()
+const GPIO_INPUT: u32  = 0;
+const GPIO_OUTPUT: u32 = 1;
+const GPIO_PULL_NONE: u32 = 0;
+const GPIO_PULL_UP: u32   = 1;
+const GPIO_PULL_DOWN: u32 = 2;
 
 // FreeRTOS tick period: 10ms on ESP-IDF default config
 const portTICK_PERIOD_MS: u32 = 10;
@@ -118,6 +120,7 @@ const PIN_BUTTON: u32 = 0;   // PRG button (J2 pin 8), active LOW, needs pullup
 const PIN_OLED_SDA: u32 = 17;
 const PIN_OLED_SCL: u32 = 18;
 const PIN_OLED_RST: u32 = 21;
+const PIN_VEXT: u32 = 36;  // Vext control: active LOW (P-channel MOSFET)
 
 // ================================================================
 // COMPILE-TIME OUI DATABASE
@@ -239,26 +242,26 @@ var tick_ms: u32 = 0; // monotonic millisecond counter, wraps after ~49 days
 // These are deliberately small — the compiler inlines them.
 
 fn ledOn() void {
-    _ = gpio_set_level(PIN_LED, 1);
+    _ = gpio_write(PIN_LED, 1);
 }
 
 fn ledOff() void {
-    _ = gpio_set_level(PIN_LED, 0);
+    _ = gpio_write(PIN_LED, 0);
 }
 
 fn buzzerOn() void {
-    _ = gpio_set_level(PIN_BUZZER, 1);
+    _ = gpio_write(PIN_BUZZER, 1);
 }
 
 fn buzzerOff() void {
-    _ = gpio_set_level(PIN_BUZZER, 0);
+    _ = gpio_write(PIN_BUZZER, 0);
 }
 
 /// Read the PRG button. Returns true when pressed.
 /// Active LOW — GPIO reads 0 when button is held down.
 /// Internal pullup is enabled in zig_main().
 fn buttonPressed() bool {
-    return gpio_get_level(PIN_BUTTON) == 0;
+    return gpio_read(PIN_BUTTON) == 0;
 }
 
 /// Block for at least `ms` milliseconds using FreeRTOS vTaskDelay.
@@ -294,9 +297,9 @@ fn buzzerTone(freq_hz: u32, dur_ms: u32) void {
     const cycles = freq_hz * dur_ms / 1000;        // total full cycles
     var i: u32 = 0;
     while (i < cycles) : (i += 1) {
-        _ = gpio_set_level(PIN_BUZZER, 1);
+        _ = gpio_write(PIN_BUZZER, 1);
         busyWaitUs(half_period_us);
-        _ = gpio_set_level(PIN_BUZZER, 0);
+        _ = gpio_write(PIN_BUZZER, 0);
         busyWaitUs(half_period_us);
     }
 }
@@ -502,8 +505,9 @@ fn oledDrawBar(x: u8, y: u8, w: u8, h: u8, pct: u8) void {
 }
 
 /// Send SSD1306 initialization sequence.
-/// Must be called after oled_i2c_init() succeeds and OLED RST is released.
-/// The 26-byte sequence configures clock, mux ratio, charge pump,
+/// Must be called after oled_i2c_init() succeeds, Vext is enabled,
+/// and OLED RST is released.
+/// The sequence configures clock, mux ratio, charge pump,
 /// orientation, contrast, and turns the display on.
 fn oledInit() void {
     const init_seq = [_]u8{
@@ -617,14 +621,13 @@ fn alertNew() void {
 
 export fn zig_main() callconv(.c) void {
     // --- GPIO initialization ---
-    // Set up all pins before the main loop. ESP-IDF GPIO functions
-    // return ESP_OK (0) on success; we discard the return value
-    // since there's no recovery path if GPIO init fails on a fixed pin.
+    // Configure all pins before the main loop. gpio_pin_init() wraps
+    // ESP-IDF gpio_config() — a real ABI symbol that configures direction,
+    // pull resistors, and interrupt state in a single call.
 
-    _ = gpio_set_direction(PIN_LED, GPIO_MODE_OUTPUT);
-    _ = gpio_set_direction(PIN_BUZZER, GPIO_MODE_OUTPUT);
-    _ = gpio_set_direction(PIN_BUTTON, GPIO_MODE_INPUT);
-    _ = gpio_set_pull_mode(PIN_BUTTON, GPIO_PULLUP_ONLY);
+    _ = gpio_pin_init(PIN_LED, GPIO_OUTPUT, GPIO_PULL_NONE);
+    _ = gpio_pin_init(PIN_BUZZER, GPIO_OUTPUT, GPIO_PULL_NONE);
+    _ = gpio_pin_init(PIN_BUTTON, GPIO_INPUT, GPIO_PULL_UP);
 
     // --- Boot animation ---
     // Two quick LED blinks to confirm the board is alive.
@@ -644,6 +647,15 @@ export fn zig_main() callconv(.c) void {
     buzzerTone(1500, 80);
 
     // --- Display init ---
+    // Vext (GPIO 36) controls the switched 3.3V rail via P-channel MOSFET.
+    // Active LOW: pull LOW to enable Vext, HIGH to disable.
+    // The OLED may be powered from Vext on some Heltec V3 revisions.
+    // Enable it before resetting/initializing the display.
+
+    _ = gpio_pin_init(PIN_VEXT, GPIO_OUTPUT, GPIO_PULL_NONE);
+    _ = gpio_write(PIN_VEXT, 0);   // enable Vext (active LOW)
+    delayMs(50);                    // let power rail stabilize
+
     // Reset the SSD1306 via GPIO 21, then initialize I2C and send
     // the init sequence. If I2C init fails, blink LED 3x fast and
     // continue headless — the device works without the OLED.
@@ -652,11 +664,11 @@ export fn zig_main() callconv(.c) void {
     // power-on state. 10ms post-reset lets the SSD1306 stabilize
     // before we start sending commands.
 
-    _ = gpio_set_direction(PIN_OLED_RST, GPIO_MODE_OUTPUT);
-    _ = gpio_set_level(PIN_OLED_RST, 0);   // hold in reset
-    delayMs(10);
-    _ = gpio_set_level(PIN_OLED_RST, 1);   // release reset
-    delayMs(10);
+    _ = gpio_pin_init(PIN_OLED_RST, GPIO_OUTPUT, GPIO_PULL_NONE);
+    _ = gpio_write(PIN_OLED_RST, 0);   // hold in reset
+    delayMs(100);
+    _ = gpio_write(PIN_OLED_RST, 1);   // release reset
+    delayMs(100);
 
     if (oled_i2c_init() != 0) {
         // OLED not responding — blink LED 3x fast, continue headless
