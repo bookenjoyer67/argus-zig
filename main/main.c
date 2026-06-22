@@ -58,6 +58,10 @@ extern int wifi_connect_sta(const char *ssid, const char *password);
 extern int httpd_start_server(int setup_mode);
 extern int httpd_stop_server(void);
 
+// Defined in ota.c — confirm the running image after a healthy boot so the
+// bootloader's rollback support won't revert a fresh OTA on the next reset.
+extern void ota_mark_valid(void);
+
 // Defined in main.zig — setup-mode OLED screen, loops until reboot
 extern void zig_main_setup(void);
 
@@ -347,7 +351,11 @@ void app_main(void) {
     // enters an infinite loop. This call never returns.
     //
     // If it does return (panic or logic error), the device
-    // will sit idle until watchdog reset.
+    //   will sit idle until watchdog reset.
+
+    // All subsystems came up — treat this as a healthy boot and confirm the
+    // running image so an OTA update isn't rolled back on the next reset.
+    ota_mark_valid();
 
     zig_main();
 

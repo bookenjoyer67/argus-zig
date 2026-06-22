@@ -21,7 +21,9 @@ idf.py build
 idf.py merge-bin -o argus-merged.bin
 
 echo "=== Publishing release $TAG ==="
-gh release create "$TAG" argus-merged.bin \
+# argus-merged.bin: full image for the web flasher (USB).
+# argus-zig.bin:    app-only image for OTA (HTTPS + BLE).
+gh release create "$TAG" build/argus-merged.bin build/argus-zig.bin \
   --title "Argus $TAG" \
   --notes "Prebuilt firmware for the Heltec WiFi LoRa 32 V3 (ESP32-S3). Flash from a desktop Chrome/Edge browser at https://bookenjoyer67.github.io/argus-zig/web/flash.html"
 

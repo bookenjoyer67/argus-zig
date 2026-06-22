@@ -15,6 +15,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_random.h"
+#include "esp_system.h"
 #include "nimble/nimble_port.h"
 #include "nimble/nimble_port_freertos.h"
 #include "host/ble_hs.h"
@@ -114,6 +115,36 @@ static int nus_access_cb(uint16_t conn_handle, uint16_t attr_handle,
     return BLE_ATT_ERR_UNLIKELY;
 }
 
+// ---- OTA-over-BLE: stream argus-zig.bin into the inactive slot ----
+// ota.c owns the esp_ota_* state machine; these chars feed it.
+extern int ota_ble_begin(uint32_t total);
+extern int ota_ble_write(const uint8_t *data, uint32_t len);
+extern int ota_ble_end(void);
+extern void ota_ble_abort(void);
+extern int ota_progress_pct(void);
+
+// OTA service e3a40001-... (control/data require an encrypted+authed link).
+static const ble_uuid128_t ota_svc_uuid = BLE_UUID128_INIT(
+    0x9e, 0xca, 0xdc, 0x24, 0x0e, 0xe5, 0xa9, 0xe0,
+    0x93, 0xf3, 0xa3, 0xb5, 0x01, 0x00, 0xa4, 0xe3);
+static const ble_uuid128_t ota_ctrl_uuid = BLE_UUID128_INIT(
+    0x9e, 0xca, 0xdc, 0x24, 0x0e, 0xe5, 0xa9, 0xe0,
+    0x93, 0xf3, 0xa3, 0xb5, 0x02, 0x00, 0xa4, 0xe3);
+static const ble_uuid128_t ota_data_uuid = BLE_UUID128_INIT(
+    0x9e, 0xca, 0xdc, 0x24, 0x0e, 0xe5, 0xa9, 0xe0,
+    0x93, 0xf3, 0xa3, 0xb5, 0x03, 0x00, 0xa4, 0xe3);
+static const ble_uuid128_t ota_status_uuid = BLE_UUID128_INIT(
+    0x9e, 0xca, 0xdc, 0x24, 0x0e, 0xe5, 0xa9, 0xe0,
+    0x93, 0xf3, 0xa3, 0xb5, 0x04, 0x00, 0xa4, 0xe3);
+
+static uint16_t g_ota_status_handle;
+static uint8_t g_ota_last_pct;
+
+static int ota_ctrl_cb(uint16_t conn_handle, uint16_t attr_handle,
+                       struct ble_gatt_access_ctxt *ctxt, void *arg);
+static int ota_data_cb(uint16_t conn_handle, uint16_t attr_handle,
+                       struct ble_gatt_access_ctxt *ctxt, void *arg);
+
 static const struct ble_gatt_svc_def gatt_svcs[] = {
     {
         .type = BLE_GATT_SVC_TYPE_PRIMARY,
@@ -134,10 +165,95 @@ static const struct ble_gatt_svc_def gatt_svcs[] = {
             { 0 },
         },
     },
+    {
+        .type = BLE_GATT_SVC_TYPE_PRIMARY,
+        .uuid = &ota_svc_uuid.u,
+        .characteristics = (struct ble_gatt_chr_def[]){
+            {
+                .uuid = &ota_ctrl_uuid.u,
+                .access_cb = ota_ctrl_cb,
+                .flags = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_WRITE_ENC |
+                         BLE_GATT_CHR_F_WRITE_AUTHEN,
+            },
+            {
+                .uuid = &ota_data_uuid.u,
+                .access_cb = ota_data_cb,
+                .flags = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_WRITE_ENC |
+                         BLE_GATT_CHR_F_WRITE_AUTHEN,
+            },
+            {
+                .uuid = &ota_status_uuid.u,
+                .access_cb = ota_ctrl_cb,
+                .flags = BLE_GATT_CHR_F_NOTIFY,
+                .val_handle = &g_ota_status_handle,
+            },
+            { 0 },
+        },
+    },
     { 0 },
 };
 
 static int ble_periph_gap_event(struct ble_gap_event *event, void *arg);
+
+// Notify the phone of OTA status: code 0=progress, 1=done, 2=error; pct 0-100.
+static void ota_notify(uint8_t code, uint8_t pct) {
+    if (g_conn_handle == BLE_HS_CONN_HANDLE_NONE) return;
+    uint8_t buf[2] = { code, pct };
+    struct os_mbuf *om = ble_hs_mbuf_from_flat(buf, sizeof(buf));
+    if (om) ble_gatts_notify_custom(g_conn_handle, g_ota_status_handle, om);
+}
+
+static void ota_reboot_task(void *arg) {
+    (void)arg;
+    vTaskDelay(pdMS_TO_TICKS(800)); // let the notify flush
+    esp_restart();
+}
+
+// OTA control: [0x01][size LE32] = START, [0x02] = END, [0x03] = ABORT.
+static int ota_ctrl_cb(uint16_t conn_handle, uint16_t attr_handle,
+                       struct ble_gatt_access_ctxt *ctxt, void *arg) {
+    (void)conn_handle; (void)attr_handle; (void)arg;
+    if (ctxt->op != BLE_GATT_ACCESS_OP_WRITE_CHR) return 0;
+    uint8_t b[8] = {0};
+    uint16_t len = OS_MBUF_PKTLEN(ctxt->om);
+    if (len > sizeof(b)) len = sizeof(b);
+    ble_hs_mbuf_to_flat(ctxt->om, b, len, NULL);
+    if (len < 1) return 0;
+
+    if (b[0] == 0x01 && len >= 5) {
+        uint32_t total = (uint32_t)b[1] | ((uint32_t)b[2] << 8) |
+                         ((uint32_t)b[3] << 16) | ((uint32_t)b[4] << 24);
+        g_ota_last_pct = 0;
+        ota_notify(ota_ble_begin(total) == 0 ? 0 : 2, 0);
+    } else if (b[0] == 0x02) {
+        int rc = ota_ble_end();
+        ota_notify(rc == 0 ? 1 : 2, rc == 0 ? 100 : 0);
+        if (rc == 0) xTaskCreate(ota_reboot_task, "ota_rb", 2048, NULL, 5, NULL);
+    } else if (b[0] == 0x03) {
+        ota_ble_abort();
+        ota_notify(2, 0);
+    }
+    return 0;
+}
+
+// OTA data: each write is one chunk streamed into the inactive slot.
+static int ota_data_cb(uint16_t conn_handle, uint16_t attr_handle,
+                       struct ble_gatt_access_ctxt *ctxt, void *arg) {
+    (void)conn_handle; (void)attr_handle; (void)arg;
+    if (ctxt->op != BLE_GATT_ACCESS_OP_WRITE_CHR) return 0;
+    static uint8_t chunk[512];
+    uint16_t len = OS_MBUF_PKTLEN(ctxt->om);
+    if (len > sizeof(chunk)) len = sizeof(chunk);
+    ble_hs_mbuf_to_flat(ctxt->om, chunk, len, NULL);
+    if (ota_ble_write(chunk, len) != 0) { ota_notify(2, 0); return 0; }
+    int p = ota_progress_pct();
+    if (p >= 0 && (uint8_t)p >= g_ota_last_pct + 5) {
+        g_ota_last_pct = (uint8_t)p;
+        ota_notify(0, (uint8_t)p);
+    }
+    return 0;
+}
+
 
 // (Re)start connectable advertising with the NUS UUID + neutral name.
 static void ble_advertise(void) {

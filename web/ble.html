@@ -85,6 +85,10 @@
   .pill.watched { background:var(--orange); color:#1a0e00; }
   .pill.targeted { background:var(--corrupt); color:#fff; animation:corruptpulse 1s infinite; }
   .spacer { flex:1; }
+  .bar button{ background:none; color:var(--accent); border:1px solid rgba(30,255,157,.5);
+    border-radius:6px; padding:5px 10px; font:inherit; font-size:12px; cursor:pointer; }
+  .bar button:hover{ color:var(--gold); border-color:var(--gold); }
+  .bar button:disabled{ opacity:.6; cursor:default; }
   #connect { color:var(--accent); background:none; border:1px solid rgba(30,255,157,.5);
           border-radius:6px; padding:6px 14px; cursor:pointer; font-size:13px; }
   #connect:hover { color:var(--gold); border-color:var(--gold); }
@@ -147,6 +151,7 @@
     <span>Battery: <span id="batt" class="mono">--</span></span>
     <span>Threat: <span id="threat" class="pill clear">clear</span></span>
     <span class="spacer"></span>
+    <button id="ota-btn" onclick="otaUpdate()" style="display:none">Update firmware</button>
     <span id="ver" class="mono" style="opacity:.5">v?</span>
   </div>
 
@@ -155,6 +160,12 @@
 const NUS = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
 const RX  = '6e400002-b5a3-f393-e0a9-e50e24dcca9e';
 const TX  = '6e400003-b5a3-f393-e0a9-e50e24dcca9e';
+// OTA service
+const OTA_SVC    = 'e3a40001-b5a3-f393-e0a9-e50e24dcca9e';
+const OTA_CTRL   = 'e3a40002-b5a3-f393-e0a9-e50e24dcca9e';
+const OTA_DATA   = 'e3a40003-b5a3-f393-e0a9-e50e24dcca9e';
+const OTA_STATUS = 'e3a40004-b5a3-f393-e0a9-e50e24dcca9e';
+let otaCtrl = null, otaData = null;
 let rxChar = null, rxBuf = '', timers = [];
 const dec = new TextDecoder(), enc = new TextEncoder();
 
@@ -309,7 +320,7 @@ async function connect(){
   if (!navigator.bluetooth){ $('conn-status').textContent='Web Bluetooth unsupported'; return; }
   try{
     $('conn-status').textContent='requesting...';
-    const dev = await navigator.bluetooth.requestDevice({ filters:[{ services:[NUS] }] });
+    const dev = await navigator.bluetooth.requestDevice({ filters:[{ services:[NUS] }], optionalServices:[OTA_SVC] });
     dev.addEventListener('gattserverdisconnected', onDisconnect);
     $('conn-status').textContent='connecting...';
     const server = await dev.gatt.connect();
@@ -318,6 +329,16 @@ async function connect(){
     rxChar = await svc.getCharacteristic(RX);
     await tx.startNotifications();
     tx.addEventListener('characteristicvaluechanged', onNotify);
+    // OTA service (optional — present on OTA-capable firmware).
+    try {
+      const osvc = await server.getPrimaryService(OTA_SVC);
+      otaCtrl = await osvc.getCharacteristic(OTA_CTRL);
+      otaData = await osvc.getCharacteristic(OTA_DATA);
+      const ost = await osvc.getCharacteristic(OTA_STATUS);
+      await ost.startNotifications();
+      ost.addEventListener('characteristicvaluechanged', onOtaStatus);
+      $('ota-btn').style.display = '';
+    } catch(_) { otaCtrl = null; otaData = null; }
     $('conn-status').textContent='paired \u2014 live';
     $('connect').textContent='Connected';
     try { if ('Notification' in window && Notification.permission === 'default')
@@ -331,11 +352,48 @@ async function connect(){
 }
 function onDisconnect(){
   $('conn-status').textContent='disconnected'; $('connect').textContent='Connect';
-  rxChar=null; rxBuf=''; timers.forEach(clearInterval); timers=[];
+  rxChar=null; rxBuf=''; otaCtrl=null; otaData=null;
+  $('ota-btn').style.display='none';
+  timers.forEach(clearInterval); timers=[];
 }
 async function send(cmd){
   if (!rxChar) return;
   try { await rxChar.writeValue(enc.encode(cmd)); } catch(e){}
+}
+
+// --- OTA over BLE ---
+function onOtaStatus(ev){
+  const d = ev.target.value; if (d.byteLength < 2) return;
+  const code = d.getUint8(0), pct = d.getUint8(1);
+  const btn = $('ota-btn');
+  if (code === 0) btn.textContent = 'Updating ' + pct + '%';
+  else if (code === 1) btn.textContent = 'Done — rebooting…';
+  else if (code === 2) { btn.textContent = 'Update error'; btn.disabled = false; }
+}
+
+async function otaUpdate(){
+  if (!otaCtrl || !otaData) return;
+  if (!confirm('Download and flash the latest firmware over BLE?\nKeep this page open — takes a few minutes.')) return;
+  const btn = $('ota-btn');
+  btn.disabled = true; btn.textContent = 'Fetching…';
+  try {
+    let url = 'firmware/argus-zig.bin';
+    try { const v = await (await fetch('firmware/version.json')).json(); if (v.url) url = v.url; } catch(_){}
+    const buf = new Uint8Array(await (await fetch(url)).arrayBuffer());
+    const size = buf.length;
+    // START: [0x01][size LE32]
+    await otaCtrl.writeValue(new Uint8Array([1, size & 255, (size>>8)&255, (size>>16)&255, (size>>24)&255]));
+    const CHUNK = 180;
+    for (let off = 0; off < size; off += CHUNK){
+      await otaData.writeValue(buf.subarray(off, Math.min(off + CHUNK, size)));
+      if (((off / CHUNK) | 0) % 32 === 0) btn.textContent = 'Sending ' + Math.floor(off*100/size) + '%';
+    }
+    await otaCtrl.writeValue(new Uint8Array([2])); // END
+    btn.textContent = 'Done — rebooting…';
+  } catch(e){
+    try { await otaCtrl.writeValue(new Uint8Array([3])); } catch(_){} // ABORT
+    btn.textContent = 'Update failed'; btn.disabled = false;
+  }
 }
 
 // tile filter

@@ -163,6 +163,7 @@
     <span>Threat: <span id="threat" class="pill clear">clear</span></span>
     <span class="spacer"></span>
     <a href="/api/export/csv">Export CSV</a>
+    <button onclick="otaUpdate(this)">Update firmware</button>
     <span id="ver" class="mono" style="opacity:.5">v?</span>
   </div>
 
@@ -413,6 +414,17 @@ async function pollMesh() {
       }
     }
   } catch (e) {}
+}
+
+async function otaUpdate(btn) {
+  if (!confirm('Download and flash the latest firmware? The device will reboot.')) return;
+  btn.disabled = true; btn.textContent = 'Updating…';
+  try {
+    const r = await (await fetch('/api/ota', { method: 'POST' })).json();
+    btn.textContent = r.ok ? 'Updating — rebooting…' : 'Update failed';
+  } catch (e) {
+    btn.textContent = 'Update started (rebooting…)';
+  }
 }
 
 document.querySelectorAll('.tile[data-filter]').forEach(t => {

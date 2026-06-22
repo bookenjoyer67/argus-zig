@@ -25,13 +25,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/configure-pages@v5
-      - name: Fetch latest firmware binary for the web flasher
+      - name: Fetch firmware binaries + version manifest
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           mkdir -p web/firmware
-          gh release download --pattern 'argus-merged.bin' --dir web/firmware --clobber \
-            || echo "no release asset yet — flasher will 404 until a release exists"
+          gh release download --pattern 'argus-merged.bin' --dir web/firmware --clobber || true
+          gh release download --pattern 'argus-zig.bin' --dir web/firmware --clobber || true
+          TAG=$(gh release view --json tagName --jq .tagName 2>/dev/null || echo "")
+          VER=${TAG#v}
+          if [ -n "$VER" ]; then
+            echo "{\"version\":\"$VER\",\"url\":\"https://bookenjoyer67.github.io/argus-zig/web/firmware/argus-zig.bin\"}" > web/firmware/version.json
+          else
+            echo "no release yet — flasher/OTA will 404 until one exists"
+          fi
       - uses: actions/upload-pages-artifact@v3
         with:
           path: '.'

@@ -160,22 +160,19 @@ pub fn computeScore(methods: u16, rssi: i8, mac: [6]u8) u8 {
         if (score >= 20) score -= 20 else score = 0;
     }
 
-    // Cap OUI-only WiFi hits. An OUI match tells you what chip is in the
-    // device, not what the device is. General-purpose modules (Liteon/Flock)
-    // stay below MEDIUM — a laptop NIC looks identical to a Flock camera NIC.
-    // Camera/drone-manufacturer chips rarely appear outside surveillance
-    // products, so give them MEDIUM (shows on surveillance page, LED pulse).
+    // Cap OUI-only WiFi hits at 25 (below MEDIUM). An OUI match tells you the
+    // chip vendor, not the device — and the circulating surveillance OUI lists
+    // proved to be commodity/shared vendors (Liteon, Espressif, TP-Link,
+    // Amazon, Samsung...) that false-positive on ordinary home gear. So OUI
+    // alone never alerts; camera/drone classification requires SSID,
+    // camera-keyword, or Remote-ID corroboration (all of which bypass this cap).
     if ((methods & METHOD_OUI != 0) and
         (methods & METHOD_SSID_PREFIX == 0) and
         (methods & METHOD_SSID_FLOCK == 0) and
         (methods & METHOD_CAM_SSID == 0) and
         (methods & METHOD_WIFI_DRONE == 0))
     {
-        const cap: u8 = switch (main.ouiCategory(mac)) {
-            .camera, .drone => 50,
-            .flock, .generic => 25,
-        };
-        if (score > cap) score = cap;
+        if (score > 25) score = 25;
     }
 
     return if (score > 100) 100 else @intCast(score);
@@ -350,14 +347,9 @@ pub fn classifyWiFi(mac: [6]u8, ssid: []const u8) ClassResult {
     } else if (oui_match and (methods & METHOD_CAM_SSID != 0)) {
         kind = .camera;
     } else if (oui_match) {
-        // OUI-only hit: surface camera/drone-manufacturer chips as their kind
-        // so they appear on the surveillance page. General-purpose modules
-        // stay .wifi_device (visible only on the Devices page).
-        kind = switch (main.ouiCategory(mac)) {
-            .camera => .camera,
-            .drone => .drone,
-            .flock, .generic => .wifi_device,
-        };
+        // OUI-only hit, no corroboration: visibility only (Devices page),
+        // never an alert. vendorName() still resolves the true vendor label.
+        kind = .wifi_device;
     } else if (methods & METHOD_CAM_SSID != 0) {
         kind = .camera; // camera SSID even without known OUI
     }

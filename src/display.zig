@@ -363,6 +363,19 @@ pub fn drawPasskey(passkey: u32) void {
     oledUpdate();
 }
 
+/// Firmware-update progress screen (driven by ota.c via ota_progress_pct).
+pub fn drawOtaProgress(pct: i32) void {
+    oledClear();
+    oledDrawStrScaled(4, 0, "UPDATE", 2);
+    const p: u8 = if (pct < 0) 0 else @intCast(@min(pct, @as(i32, 100)));
+    var buf: [8]u8 = undefined;
+    const s = std.fmt.bufPrint(&buf, "{d}%", .{p}) catch return;
+    const w: u8 = @intCast(s.len * 12);
+    oledDrawStrScaled((OLED_WIDTH - w) / 2, 26, s, 2);
+    oledDrawBar(8, 50, 112, 10, p);
+    oledUpdate();
+}
+
 // ================================================================
 // DISPLAY PAGES
 // ================================================================

@@ -13,10 +13,11 @@
 
 # Commodity Wi-Fi / MCU module vendors (the "commodity" keyword sets the
 # generic category). These chips ship in countless consumer products and are
-# NOT exclusive to any brand, so an OUI match alone proves nothing. Flock
-# cameras use these modules but are identified by their Flock-XXXX SSID (see
-# classifyWiFi); these OUIs are kept only to corroborate an SSID hit and for
-# visibility on the Devices page. On their own they stay silent at score 25.
+# NOT exclusive to any brand, so an OUI match alone proves nothing. They never
+# alert on their own (capped at score 25); kept for SSID corroboration and for
+# visibility on the Devices page with an honest vendor name. Several entries
+# below were mislabelled in the original lists, corrected against the IEEE OUI
+# registry.
 # Liteon
 70:c9:4e
 3c:91:80
@@ -39,6 +40,8 @@ b8:1e:a4
 58:00:e3
 5c:93:a2
 64:6e:69
+3c:a0:67
+20:68:9d
 # USI (Universal Global Scientific)
 08:3a:88
 e0:4f:43
@@ -55,69 +58,69 @@ a4:cf:12
 70:f0:88
 # Cisco Meraki
 e0:cb:bc
+# Fujitsu
+e4:7f:b2
+# Netgear
+38:94:ed
+# TP-Link
+d8:0d:17
+# Withings
+00:24:e4
+# Hon Hai (Foxconn)
+48:e2:44
+# HP
+00:68:eb
 # Unverified (not in IEEE OUI DB; from Flock-You/DeFlockJoplin observed prefix)
 b8:35:32
 
-# Amazon Ring / Blink cameras
+# Amazon (Ring / Blink / Echo — shared Amazon OUI, camera-category)
 74:c2:46
 40:b4:cd
 68:54:fd
 
-# Google Nest cameras
-38:94:ed
-3c:a0:67
-d8:0d:17
-
-# Arlo cameras
-00:24:e4
-48:e2:44
-
-# Wyze cameras
+# Wyze cameras (7c:c7:08 unverified, not in IEEE DB)
 7c:c7:08
 
 # Drone Remote ID (ASTM F3411) — WiFi OUI matching
 # DJI
 60:60:1f
-e4:7f:b2
 34:d2:62
-# Autel Robotics
+# Autel Robotics (unverified, not in IEEE DB)
 e8:1f:84
-# Skydio
+# Skydio (unverified, not in IEEE DB)
 58:ed:0e
 # Parrot
 a0:14:3d
 90:03:b7
-# Yuneec
+# Yuneec (unverified, not in IEEE DB)
 c8:8e:db
 
 # Consumer surveillance cameras — WiFi OUI matching
-# Hikvision (IP cameras, NVRs)
+# Hikvision (IP cameras, NVRs; 4c:6f:6e unverified)
 c4:2f:90
 18:68:cb
-4c:6f:6e
 bc:ad:28
+4c:6f:6e
 # Dahua (IP cameras, NVRs)
 3c:ef:8c
 90:02:a9
 4c:11:bf
 14:a7:8b
-# Reolink (consumer cameras)
+# Reolink (34:47:d4 is registered to Chengdu Quanjing, OEM/unverified)
 34:47:d4
 # Axis (commercial surveillance)
 00:40:8c
 ac:cc:8e
 b8:a4:4f
-# Bosch (commercial)
+# VCS (Video Communication Systems; was listed as Bosch)
 00:07:5f
-20:68:9d
-# Hanwha (formerly Samsung Techwin)
+# Hanwha (00:16:6c is a shared Samsung/Techwin OUI)
 00:16:6c
-00:68:eb
 
 # Additional surveillance cameras
 # Amcrest
 9c:8e:cd
 # Lorex
-00:1f:54  
-# Uniview
+00:1f:54
+# Uniview (58:e8:76 is an IEEE Registration Authority shared block)
 58:e8:76

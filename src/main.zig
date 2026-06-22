@@ -128,6 +128,10 @@ pub extern fn ble_gatt_get_request(out: [*]u8, max: i32) i32;
 pub extern fn ble_gatt_take_passkey(out: *u32) i32;
 pub extern fn ble_gatt_set_enabled(on: i32) i32;
 
+// OTA progress (main/ota.c) — drives the OLED update screen.
+pub extern fn ota_is_active() i32;
+pub extern fn ota_progress_pct() i32;
+
 // WiFi promiscuous sniffer — callback pushes simplified 802.11 frames
 // to a ring buffer. wifi_scan_poll drains one result.
 // Returns 1 if data available, 0 if buffer empty.
@@ -359,6 +363,9 @@ pub fn vendorName(mac: [6]u8) ?[]const u8 {
 }
 
 /// Category for a MAC's OUI. Unknown OUIs are treated as generic.
+/// Informational only: as of the OUI-audit fix, the alert decision no longer
+/// depends on category (OUI-only hits never alert — corroboration is required).
+/// Retained for the OUI_DB and possible future grouping on the Devices page.
 pub fn ouiCategory(mac: [6]u8) OuiCategory {
     for (OUI_DB[0..KNOWN_OUIS_COUNT]) |e| {
         if (std.mem.eql(u8, &e.oui, mac[0..3])) return e.category;
@@ -867,6 +874,16 @@ export fn zig_main() callconv(.c) void {
                 hop_index = (hop_index + 1) % HOP_CHANNELS.len;
                 _ = wifi_set_channel(HOP_CHANNELS[hop_index]);
                 last_hop_ms = tick_ms;
+            }
+        }
+
+        // --- OTA progress ---
+        // While a firmware update streams (HTTPS or BLE), show progress on the
+        // OLED and skip the normal page refresh.
+        if (ota_is_active() != 0) {
+            if (!stealth_mode) {
+                display.drawOtaProgress(ota_progress_pct());
+                last_draw_ms = tick_ms;
             }
         }
 

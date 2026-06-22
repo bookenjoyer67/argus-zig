@@ -40,6 +40,12 @@ extern int config_set_location(const char *lat, const char *lon);
 extern int config_get(const char *key, char *out, int out_len);
 extern int config_is_configured(void);
 
+// OTA (main/ota.c) — start a background HTTPS update.
+extern int ota_https_start(const char *url);
+
+// App image hosted alongside the web flasher on GitHub Pages.
+#define OTA_DEFAULT_URL "https://bookenjoyer67.github.io/argus-zig/web/firmware/argus-zig.bin"
+
 static httpd_handle_t server = NULL;
 
 // Shared scratch buffer for JSON rendering. The esp_http_server runs a
@@ -196,6 +202,12 @@ static esp_err_t h_location_set(httpd_req_t *req) {
     return httpd_resp_sendstr(req, "{\"ok\":true}");
 }
 
+static esp_err_t h_ota(httpd_req_t *req) {
+    int rc = ota_https_start(OTA_DEFAULT_URL);
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, rc == 0 ? "{\"ok\":true}" : "{\"ok\":false}");
+}
+
 static esp_err_t h_export_csv(httpd_req_t *req) {
     httpd_resp_set_type(req, "text/csv");
     httpd_resp_set_hdr(req, "Content-Disposition",
@@ -249,6 +261,7 @@ int httpd_start_server(int setup_mode) {
         register_uri("/api/config", HTTP_GET, h_config_get);
         register_uri("/api/config", HTTP_POST, h_config_set);
         register_uri("/api/location", HTTP_POST, h_location_set);
+        register_uri("/api/ota", HTTP_POST, h_ota);
     }
     printf("Argus: httpd started (%s)\n", setup_mode ? "setup" : "dashboard");
     return 0;
