@@ -81,13 +81,9 @@ var stingray_last_location: ?[2]i32 = null; // GPS at last suspected event
 // ================================================================
 
 /// Check if a MAC address matches any known surveillance OUI.
-/// Iterates over the database. At 31 entries, the compiler
-/// will likely unroll this into a decision tree.
+/// Delegates to the single OUI_DB lookup in main.zig.
 pub fn matchOui(mac: [6]u8) bool {
-    for (main.KNOWN_OUIS[0..main.KNOWN_OUIS_COUNT]) |oui| {
-        if (std.mem.eql(u8, &oui, mac[0..3])) return true;
-    }
-    return false;
+    return main.matchOui(mac);
 }
 
 // ================================================================
@@ -164,18 +160,22 @@ pub fn computeScore(methods: u16, rssi: i8, mac: [6]u8) u8 {
         if (score >= 20) score -= 20 else score = 0;
     }
 
-    // Cap OUI-only WiFi hits below MEDIUM. An OUI match tells you what
-    // chip is in the device, not what the device is. Without SSID
-    // corroboration (Flock-XXXX, camera keywords, Remote ID), a Liteon
-    // module in a laptop looks identical to one in a Flock camera.
-    // Keep it in the tracker table for logging, but don't alert.
+    // Cap OUI-only WiFi hits. An OUI match tells you what chip is in the
+    // device, not what the device is. General-purpose modules (Liteon/Flock)
+    // stay below MEDIUM — a laptop NIC looks identical to a Flock camera NIC.
+    // Camera/drone-manufacturer chips rarely appear outside surveillance
+    // products, so give them MEDIUM (shows on surveillance page, LED pulse).
     if ((methods & METHOD_OUI != 0) and
         (methods & METHOD_SSID_PREFIX == 0) and
         (methods & METHOD_SSID_FLOCK == 0) and
         (methods & METHOD_CAM_SSID == 0) and
         (methods & METHOD_WIFI_DRONE == 0))
     {
-        if (score > 25) score = 25;
+        const cap: u8 = switch (main.ouiCategory(mac)) {
+            .camera, .drone => 50,
+            .flock, .generic => 25,
+        };
+        if (score > cap) score = cap;
     }
 
     return if (score > 100) 100 else @intCast(score);
@@ -343,12 +343,21 @@ pub fn classifyWiFi(mac: [6]u8, ssid: []const u8) ClassResult {
         }
     }
 
-    if (oui_match and (methods & METHOD_SSID_PREFIX != 0)) {
+    if (methods & METHOD_SSID_PREFIX != 0) {
+        // A "Flock-XXXX" SSID is the reliable Flock signal — classify it
+        // regardless of OUI (the OUIs are commodity modules, not Flock-owned).
         kind = .flock_camera;
     } else if (oui_match and (methods & METHOD_CAM_SSID != 0)) {
         kind = .camera;
     } else if (oui_match) {
-        kind = .wifi_device;
+        // OUI-only hit: surface camera/drone-manufacturer chips as their kind
+        // so they appear on the surveillance page. General-purpose modules
+        // stay .wifi_device (visible only on the Devices page).
+        kind = switch (main.ouiCategory(mac)) {
+            .camera => .camera,
+            .drone => .drone,
+            .flock, .generic => .wifi_device,
+        };
     } else if (methods & METHOD_CAM_SSID != 0) {
         kind = .camera; // camera SSID even without known OUI
     }
@@ -551,7 +560,7 @@ pub fn countByKind() KindCounts {
     for (0..main.tracker_count) |i| {
         switch (main.trackers[i].kind) {
             .flock_camera => { c.flock_camera += 1; c.surv += 1; },
-            .wifi_device => { c.wifi_device += 1; c.surv += 1; },
+            .wifi_device => { c.wifi_device += 1; c.track += 1; },
             .drone => { c.drone += 1; c.surv += 1; },
             .raven => { c.raven += 1; c.surv += 1; },
             .camera => { c.camera += 1; c.surv += 1; },

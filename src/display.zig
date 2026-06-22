@@ -371,7 +371,7 @@ pub fn drawPasskey(passkey: u32) void {
 // Pages are drawn on-demand (not continuously) to save CPU.
 
 pub var current_page: u8 = 0;
-pub const NUM_PAGES: u8 = 7;
+pub const NUM_PAGES: u8 = 8;
 
 /// Draw page number indicator top-right (e.g. "1/7").
 fn drawPageNum(page: u8) void {
@@ -729,6 +729,40 @@ fn drawSystem() void {
     oledUpdate();
 }
 
+/// Page 7: All OUI-matched devices — visibility without alerting.
+/// Lists every tracker whose OUI matched the database, with the vendor name
+/// and RSSI, regardless of score. The "?" flags these as OUI-only: the chip
+/// vendor is known, but without SSID corroboration the device kind is a guess.
+fn drawAllDevices() void {
+    oledClear();
+    drawPageNum(7);
+    oledDrawStr(0, 0, "DEVICES");
+
+    var row: u8 = 0;
+    var total: u32 = 0;
+    var i: usize = main.tracker_count;
+    while (i > 0) {
+        i -= 1;
+        if (main.trackers[i].methods & scanner.METHOD_OUI == 0) continue;
+        total += 1;
+        if (row >= 5) continue; // keep counting, but only 5 rows fit
+        const y: u8 = 10 + row * 8;
+        const name = main.vendorName(main.trackers[i].mac) orelse "Unknown";
+        const nshow = if (name.len > 12) name[0..12] else name;
+        var buf: [32]u8 = undefined;
+        _ = std.fmt.bufPrint(&buf, "{s} {d} ?", .{ nshow, main.trackers[i].rssi }) catch continue;
+        oledDrawStr(0, y, &buf);
+        row += 1;
+    }
+
+    if (total == 0) oledDrawStr(0, 28, "No OUI devices");
+    var fbuf: [24]u8 = undefined;
+    _ = std.fmt.bufPrint(&fbuf, "{d} in OUI range", .{total}) catch {};
+    oledDrawStr(0, 48, &fbuf);
+    oledDrawStr(0, 56, "PRG:next page");
+    oledUpdate();
+}
+
 /// Route to the current page. Called on button press, at boot, and on new detection.
 pub fn drawPage() void {
     switch (current_page) {
@@ -739,6 +773,7 @@ pub fn drawPage() void {
         4 => drawBleList(),
         5 => drawStats(),
         6 => drawSystem(),
+        7 => drawAllDevices(),
         else => drawSummary(),
     }
 }

@@ -1,16 +1,29 @@
-# Flock Safety + known surveillance OUIs
-# Format: XX:XX:XX
-# Parsed at compile time by Zig @embedFile + comptime
+# Surveillance & device OUIs (parsed at comptime by main.zig OUI_DB)
+#
+# Section-header convention (read by main.zig OUI_DB at comptime):
+#   - Vendor name for an OUI = the nearest preceding "# ..." comment
+#     (truncated at " (", "/", em-dash, and trailing camera/surveillance words).
+#   - Category is a running state, changed only when a header contains a
+#     keyword: "flock" -> flock, "drone"/"remote id" -> drone,
+#     "camera"/"surveillance" -> camera, "commodity" -> generic.
+#     Otherwise it is inherited.
+#   New sections MUST put a category keyword in their header (or sit under a
+#   section that already set the right category). Vendor-only sub-headers
+#   (e.g. "# DJI", "# Hikvision") set the name without changing the category.
 
-# Flock Safety (from Flock-You + DeFlockJoplin)
+# Commodity Wi-Fi / MCU module vendors (the "commodity" keyword sets the
+# generic category). These chips ship in countless consumer products and are
+# NOT exclusive to any brand, so an OUI match alone proves nothing. Flock
+# cameras use these modules but are identified by their Flock-XXXX SSID (see
+# classifyWiFi); these OUIs are kept only to corroborate an SSID hit and for
+# visibility on the Devices page. On their own they stay silent at score 25.
+# Liteon
 70:c9:4e
 3c:91:80
 d8:f3:bc
 80:30:49
-b8:35:32
 14:5a:fc
 74:4c:a1
-08:3a:88
 9c:2f:9d
 c0:35:32
 94:08:53
@@ -21,23 +34,29 @@ f8:a2:d6
 00:f4:8d
 d0:39:57
 e8:d0:fc
-e0:4f:43
 b8:1e:a4
 70:08:94
-58:8e:81
-ec:1b:bd
-3c:71:bf
 58:00:e3
-90:35:ea
 5c:93:a2
 64:6e:69
-48:27:ea
+# USI (Universal Global Scientific)
+08:3a:88
+e0:4f:43
+# Silicon Labs
+58:8e:81
+ec:1b:bd
+90:35:ea
+# Espressif
+3c:71:bf
 a4:cf:12
-82:6b:f2
-
-# Additional Flock Safety (newer deployments)
+# Samsung
+48:27:ea
+# Nintendo
 70:f0:88
+# Cisco Meraki
 e0:cb:bc
+# Unverified (not in IEEE OUI DB; from Flock-You/DeFlockJoplin observed prefix)
+b8:35:32
 
 # Amazon Ring / Blink cameras
 74:c2:46

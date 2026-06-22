@@ -244,22 +244,97 @@ pub const KNOWN_OUIS_COUNT: usize = blk: {
     break :blk count;
 };
 
-pub const KNOWN_OUIS: [OUI_MAX][3]u8 = blk: {
-    @setEvalBranchQuota(20000);
+/// Broad device category an OUI belongs to, derived from the ouis.txt section
+/// it appears in. Used to give surveillance-specific chips (cameras, drones)
+/// a higher OUI-only score cap than general-purpose modules (Liteon, Flock).
+pub const OuiCategory = enum(u8) { flock, camera, drone, generic };
+
+/// One OUI record: prefix + vendor name + category. The name is a fixed
+/// buffer (not a slice) to avoid the comptime-slice-escape issue that forces
+/// KNOWN_OUIS-style fixed arrays — comptime can't return slices into its own
+/// temporaries, but a runtime const array of fixed buffers is fine.
+pub const OuiEntry = struct {
+    oui: [3]u8,
+    name: [24]u8,
+    name_len: u8,
+    category: OuiCategory,
+};
+
+const NameBuf = struct { buf: [24]u8, len: u8 };
+
+/// Clean a "# ..." section comment into a short vendor name: truncate at the
+/// first " (", "/", or em-dash, then strip trailing descriptor words.
+fn cleanVendorName(comment: []const u8) NameBuf {
+    var s = comment;
+    if (std.mem.indexOf(u8, s, " (")) |p| s = s[0..p];
+    if (std.mem.indexOf(u8, s, "/")) |p| s = s[0..p];
+    if (std.mem.indexOf(u8, s, " \u{2014}")) |p| s = s[0..p]; // em-dash
+    s = std.mem.trim(u8, s, " \t");
+    const suffixes = [_][]const u8{ " cameras", " camera", " surveillance", " OUIs" };
+    var changed = true;
+    while (changed) {
+        changed = false;
+        for (suffixes) |suf| {
+            if (std.ascii.endsWithIgnoreCase(s, suf)) {
+                s = std.mem.trim(u8, s[0 .. s.len - suf.len], " \t");
+                changed = true;
+            }
+        }
+    }
+    var nb = NameBuf{ .buf = [_]u8{0} ** 24, .len = 0 };
+    const n = @min(s.len, 24);
+    @memcpy(nb.buf[0..n], s[0..n]);
+    nb.len = @intCast(n);
+    return nb;
+}
+
+/// Update the running category from a section comment. Keyword precedence:
+/// commodity > flock > drone > camera. Headers without a keyword inherit `prev`.
+fn deriveCategory(prev: OuiCategory, comment: []const u8) OuiCategory {
+    if (std.ascii.indexOfIgnoreCase(comment, "commodity") != null) return .generic;
+    if (std.ascii.indexOfIgnoreCase(comment, "flock") != null) return .flock;
+    if (std.ascii.indexOfIgnoreCase(comment, "drone") != null or
+        std.ascii.indexOfIgnoreCase(comment, "remote id") != null) return .drone;
+    if (std.ascii.indexOfIgnoreCase(comment, "camera") != null or
+        std.ascii.indexOfIgnoreCase(comment, "surveillance") != null) return .camera;
+    return prev;
+}
+
+/// OUI database with vendor name + category — one comptime parse of ouis.txt.
+/// Vendor name tracks the nearest preceding comment; category is a running
+/// state changed only by category keywords (see ouis.txt header).
+pub const OUI_DB: [OUI_MAX]OuiEntry = blk: {
+    @setEvalBranchQuota(400000);
     const raw = @embedFile("ouis.txt");
-    var list: [OUI_MAX][3]u8 = [_][3]u8{[_]u8{0xFF} ** 3} ** OUI_MAX; // fill with sentinel
+    var list: [OUI_MAX]OuiEntry = undefined;
+    for (&list) |*e| {
+        e.* = .{ .oui = .{ 0xFF, 0xFF, 0xFF }, .name = [_]u8{0} ** 24, .name_len = 0, .category = .generic };
+    }
     var count: usize = 0;
+    var cur_name = NameBuf{ .buf = [_]u8{0} ** 24, .len = 0 };
+    var cur_cat: OuiCategory = .generic;
     var lines = std.mem.splitScalar(u8, raw, '\n');
     while (lines.next()) |line| {
         const trimmed = std.mem.trim(u8, line, " \t\r");
-        if (trimmed.len == 0 or trimmed[0] == '#') continue;
+        if (trimmed.len == 0) continue;
+        if (trimmed[0] == '#') {
+            const body = std.mem.trim(u8, trimmed[1..], " \t");
+            if (body.len == 0) continue;
+            cur_name = cleanVendorName(body);
+            cur_cat = deriveCategory(cur_cat, body);
+            continue;
+        }
         if (trimmed.len != 8 or trimmed[2] != ':') continue;
         if (count >= OUI_MAX) @compileError("Too many OUIs — increase OUI_MAX");
-
         list[count] = .{
-            std.fmt.parseInt(u8, trimmed[0..2], 16) catch continue,
-            std.fmt.parseInt(u8, trimmed[3..5], 16) catch continue,
-            std.fmt.parseInt(u8, trimmed[6..8], 16) catch continue,
+            .oui = .{
+                std.fmt.parseInt(u8, trimmed[0..2], 16) catch continue,
+                std.fmt.parseInt(u8, trimmed[3..5], 16) catch continue,
+                std.fmt.parseInt(u8, trimmed[6..8], 16) catch continue,
+            },
+            .name = cur_name.buf,
+            .name_len = cur_name.len,
+            .category = cur_cat,
         };
         count += 1;
     }
@@ -268,13 +343,27 @@ pub const KNOWN_OUIS: [OUI_MAX][3]u8 = blk: {
 };
 
 /// Check if a MAC address matches any known surveillance OUI.
-/// Iterates over the database. At 31 entries, the compiler
-/// will likely unroll this into a decision tree.
 pub fn matchOui(mac: [6]u8) bool {
-    for (KNOWN_OUIS[0..KNOWN_OUIS_COUNT]) |oui| {
-        if (std.mem.eql(u8, &oui, mac[0..3])) return true;
+    for (OUI_DB[0..KNOWN_OUIS_COUNT]) |e| {
+        if (std.mem.eql(u8, &e.oui, mac[0..3])) return true;
     }
     return false;
+}
+
+/// Vendor name for a MAC's OUI, or null if not in the database.
+pub fn vendorName(mac: [6]u8) ?[]const u8 {
+    for (OUI_DB[0..KNOWN_OUIS_COUNT]) |*e| {
+        if (std.mem.eql(u8, &e.oui, mac[0..3])) return e.name[0..e.name_len];
+    }
+    return null;
+}
+
+/// Category for a MAC's OUI. Unknown OUIs are treated as generic.
+pub fn ouiCategory(mac: [6]u8) OuiCategory {
+    for (OUI_DB[0..KNOWN_OUIS_COUNT]) |e| {
+        if (std.mem.eql(u8, &e.oui, mac[0..3])) return e.category;
+    }
+    return .generic;
 }
 
 // ================================================================
