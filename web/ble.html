@@ -166,6 +166,7 @@ const OTA_CTRL   = 'e3a40002-b5a3-f393-e0a9-e50e24dcca9e';
 const OTA_DATA   = 'e3a40003-b5a3-f393-e0a9-e50e24dcca9e';
 const OTA_STATUS = 'e3a40004-b5a3-f393-e0a9-e50e24dcca9e';
 let otaCtrl = null, otaData = null;
+let latestVersion = null, runningVersion = null;
 let rxChar = null, rxBuf = '', timers = [];
 const dec = new TextDecoder(), enc = new TextEncoder();
 
@@ -235,6 +236,8 @@ function renderStatus(s){
   $('uptime').textContent=fmtUptime(s.uptime_seconds||0);
   $('batt').textContent=(s.battery_pct??'--')+'%';
   $('ver').textContent='v'+(s.firmware_version||'?');
+  runningVersion = s.firmware_version || null;
+  refreshOtaButton();
   pushAlert(lv, s.stingray_active);
 }
 
@@ -338,7 +341,9 @@ async function connect(){
       const ost = await osvc.getCharacteristic(OTA_STATUS);
       await ost.startNotifications();
       ost.addEventListener('characteristicvaluechanged', onOtaStatus);
-      $('ota-btn').style.display = '';
+      // Show the update button only when a newer version is published.
+      try { const v = await (await fetch('firmware/version.json')).json(); latestVersion = v.version || null; } catch(_){}
+      refreshOtaButton();
     } catch(_) { otaCtrl = null; otaData = null; }
     $('conn-status').textContent='paired \u2014 live';
     $('connect').textContent='Connected';
@@ -354,6 +359,7 @@ async function connect(){
 function onDisconnect(){
   $('conn-status').textContent='disconnected'; $('connect').textContent='Connect';
   rxChar=null; rxBuf=''; otaCtrl=null; otaData=null;
+  latestVersion=null; runningVersion=null;
   $('ota-btn').style.display='none';
   timers.forEach(clearInterval); timers=[];
 }
@@ -363,6 +369,17 @@ async function send(cmd){
 }
 
 // --- OTA over BLE ---
+function cmpVer(a, b){
+  const p = s => String(s).split('.').map(n => parseInt(n, 10) || 0);
+  const x = p(a), y = p(b);
+  for (let i = 0; i < 3; i++){ if ((x[i]||0) !== (y[i]||0)) return (x[i]||0) - (y[i]||0); }
+  return 0;
+}
+function refreshOtaButton(){
+  const show = otaCtrl && otaData && latestVersion && runningVersion &&
+               cmpVer(latestVersion, runningVersion) > 0;
+  $('ota-btn').style.display = show ? '' : 'none';
+}
 function onOtaStatus(ev){
   const d = ev.target.value; if (d.byteLength < 2) return;
   const code = d.getUint8(0), pct = d.getUint8(1);
