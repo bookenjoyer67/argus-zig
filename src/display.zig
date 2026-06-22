@@ -192,6 +192,60 @@ fn oledDrawInt(x: u8, y: u8, n: i32) void {
     oledDrawStr(x, y, s);
 }
 
+/// Draw a single 5x7 character scaled up by `scale`.
+/// Each font pixel becomes a scale×scale block. Used for the big
+/// RSSI readout on the proximity page (scale 3 ≈ 15x21px glyphs).
+fn oledDrawCharScaled(x: u8, y: u8, c: u8, scale: u8) void {
+    const glyph = fontChar(c);
+    var col: u8 = 0;
+    while (col < 5) : (col += 1) {
+        var row: u8 = 0;
+        while (row < 7) : (row += 1) {
+            if ((glyph[col] & (@as(u8, 1) << @as(u3, @truncate(row)))) == 0) continue;
+            var sx: u8 = 0;
+            while (sx < scale) : (sx += 1) {
+                var sy: u8 = 0;
+                while (sy < scale) : (sy += 1) {
+                    oledSetPixel(x +% col * scale +% sx, y +% row * scale +% sy, true);
+                }
+            }
+        }
+    }
+}
+
+/// Draw a scaled string. Character advance is (5+1)*scale pixels.
+fn oledDrawStrScaled(x: u8, y: u8, s: []const u8, scale: u8) void {
+    var cx = x;
+    const advance: u8 = 6 *% scale;
+    for (s) |c| {
+        oledDrawCharScaled(cx, y, c, scale);
+        cx +|= advance;
+    }
+}
+
+/// Draw a small directional chevron at (x, y) in a 9x5 box.
+///   dir > 0: up-pointing triangle   (signal rising — getting closer)
+///   dir < 0: down-pointing triangle (signal falling — moving away)
+///   dir == 0: horizontal dash       (stable)
+/// Drawn pixel-by-pixel since the 5x7 font has no arrow glyphs.
+fn drawArrow(x: u8, y: u8, dir: i8) void {
+    if (dir == 0) {
+        var i: u8 = 0;
+        while (i < 9) : (i += 1) oledSetPixel(x + i, y + 2, true);
+        return;
+    }
+    const up = dir > 0;
+    var r: u8 = 0;
+    while (r < 5) : (r += 1) {
+        const row: u8 = if (up) r else 4 - r;
+        var c: u8 = 0;
+        while (c <= r) : (c += 1) {
+            oledSetPixel(x + 4 - c, y + row, true);
+            oledSetPixel(x + 4 + c, y + row, true);
+        }
+    }
+}
+
 /// Draw a horizontal progress bar with border.
 /// (x, y): top-left corner
 /// w, h: width and height in pixels
@@ -260,6 +314,30 @@ pub fn oledUpdate() void {
         const page_start: usize = @as(usize, page) * @as(usize, OLED_WIDTH);
         _ = main.oled_i2c_write(0x40, oled_buf[page_start..][0..OLED_WIDTH].ptr, OLED_WIDTH);
     }
+}
+
+/// Turn the SSD1306 panel off (0xAE) — used by stealth mode.
+/// The display RAM is preserved; oledDisplayOn() restores it instantly.
+pub fn oledDisplayOff() void {
+    const cmd = [_]u8{0xAE};
+    _ = main.oled_i2c_write(0x00, &cmd, cmd.len);
+}
+
+/// Turn the SSD1306 panel back on (0xAF) — used when waking from stealth.
+pub fn oledDisplayOn() void {
+    const cmd = [_]u8{0xAF};
+    _ = main.oled_i2c_write(0x00, &cmd, cmd.len);
+}
+
+/// Boot screen: big centered "ARGUS" with a status line below.
+pub fn drawBoot(msg: []const u8) void {
+    oledClear();
+    // "ARGUS" scale 2 = 5 glyphs × 12px = 60px wide
+    oledDrawStrScaled((OLED_WIDTH - 60) / 2, 16, "ARGUS", 2);
+    const mw: u8 = @intCast(msg.len * 6);
+    const mx: u8 = if (mw < OLED_WIDTH) (OLED_WIDTH - mw) / 2 else 0;
+    oledDrawStr(mx, 44, msg);
+    oledUpdate();
 }
 
 // ================================================================
@@ -401,15 +479,32 @@ fn drawThreats() void {
     oledUpdate();
 }
 
-/// Page 2: Proximity gauge for nearest threat
+/// Map RSSI to a human-readable distance word.
+/// Stronger signal = closer. Tuned for BLE/WiFi at 0 dBm TX.
+fn distanceWord(rssi: i8) []const u8 {
+    if (rssi >= -50) return "HERE";
+    if (rssi >= -65) return "CLOSE";
+    if (rssi >= -80) return "NEAR";
+    if (rssi >= -90) return "FAR";
+    return "----";
+}
+
+/// RSSI delta tracking for the proximity arrow.
+/// prox_prev_rssi holds the value sampled ~500ms ago; the proximity
+/// page compares the live RSSI against it to pick an up/down/stable arrow.
+var prox_prev_rssi: i8 = 0;
+var prox_prev_ms: u32 = 0;
+
+/// Page 2: Proximity finder — big RSSI readout, trend arrow, distance word.
+/// Refreshed every ~500ms from the main loop so the readout tracks movement.
 fn drawProximity() void {
     oledClear();
     drawPageNum(2);
-    oledDrawStr(0, 0, "PROXIMITY");
 
     if (main.tracker_count == 0) {
-        oledDrawStr(0, 18, "No threats nearby");
-        oledDrawStr(0, 56, "PRG:next page");
+        oledDrawStr(0, 0, "PROXIMITY");
+        oledDrawStr(0, 28, "No threats nearby");
+        oledDrawStr(0, 57, "PRG:next page");
         oledUpdate();
         return;
     }
@@ -425,40 +520,52 @@ fn drawProximity() void {
     }
 
     const t = main.trackers[nearest_idx];
-    var buf: [32]u8 = undefined;
-    const mac_str = formatMac(t.mac, buf[0..17]);
-    oledDrawStr(0, 12, mac_str);
-    oledDrawStr(0, 22, kindStr(t.kind));
 
-    // Drone model name if available (WiFi Remote ID Self-ID)
+    // Header: device kind in the top-left corner (+ drone model if known)
+    oledDrawStr(0, 0, kindStr(t.kind));
     if (t.kind == .drone and scanner.drone_model_buf[0] != 0) {
-        const model = std.mem.sliceTo(&scanner.drone_model_buf, 0);
-        oledDrawStr(30, 22, model);
+        oledDrawStr(24, 0, std.mem.sliceTo(&scanner.drone_model_buf, 0));
     }
 
-    // Score badge
-    var score_buf: [16]u8 = undefined;
-    _ = std.fmt.bufPrint(&score_buf, "SC: {d} {s}", .{ t.score, scoreLevel(t.score) }) catch {};
-    oledDrawStr(0, 34, &score_buf);
-
-    // GPS coordinates if fix available
-    if (scanner.gps_fix) {
-        var gps_buf: [32]u8 = undefined;
-        _ = std.fmt.bufPrint(&gps_buf, "GPS:{d}.{d} {d}.{d}", .{
-            @divTrunc(scanner.gps_lat, 1000000), @abs(@rem(@divTrunc(scanner.gps_lat, 10000), 100)),
-            @divTrunc(scanner.gps_lon, 1000000), @abs(@rem(@divTrunc(scanner.gps_lon, 10000), 100)),
-        }) catch {};
-        oledDrawStr(0, 44, &gps_buf);
+    // Trend arrow: compare live RSSI against the sample taken ~500ms ago.
+    // ±2 dBm deadband keeps a steady signal from flickering up/down.
+    if (prox_prev_ms == 0) {
+        prox_prev_rssi = t.rssi;
+        prox_prev_ms = main.tick_ms;
+    }
+    const diff: i32 = @as(i32, t.rssi) - @as(i32, prox_prev_rssi);
+    const dir: i8 = if (diff > 2) 1 else if (diff < -2) -1 else 0;
+    if ((main.tick_ms -% prox_prev_ms) >= 500) {
+        prox_prev_rssi = t.rssi;
+        prox_prev_ms = main.tick_ms;
     }
 
-    // RSSI bar: -100 = 0%, -20 = 100%
+    // Big centered RSSI number (scale 3 ≈ 15x21px glyphs)
+    var num_buf: [8]u8 = undefined;
+    const num_str = std.fmt.bufPrint(&num_buf, "{d}", .{t.rssi}) catch "?";
+    const nwidth: u8 = @intCast(num_str.len * 18); // 6px glyph cell × scale 3
+    const nx: u8 = if (nwidth < OLED_WIDTH) (OLED_WIDTH - nwidth) / 2 else 0;
+    oledDrawStrScaled(nx, 9, num_str, 3);
+
+    // "dBm" label centered below the number
+    oledDrawStr((OLED_WIDTH - 18) / 2, 31, "dBm");
+
+    // Arrow + distance word, centered as a group
+    const word = distanceWord(t.rssi);
+    const ww: u8 = @intCast(word.len * 6);
+    const group: u8 = 9 + 4 + ww; // arrow(9) + gap(4) + word
+    const gx: u8 = if (group < OLED_WIDTH) (OLED_WIDTH - group) / 2 else 0;
+    drawArrow(gx, 40, dir);
+    oledDrawStr(gx + 13, 40, word);
+
+    // Full-width RSSI bar: -100 = 0%, -20 = 100%
     const rssi_pct: u8 = if (t.rssi < -100) 0 else if (t.rssi > -20) 100 else blk: {
         const val: u32 = @intCast(@as(i32, t.rssi) + 100);
         break :blk @intCast(val * 100 / 80);
     };
-    oledDrawBar(0, 44, 128, 10, rssi_pct);
+    oledDrawBar(0, 48, 128, 8, rssi_pct);
 
-    oledDrawStr(0, 56, "PRG:next page");
+    oledDrawStr(0, 57, "PRG:next page");
     oledUpdate();
 }
 

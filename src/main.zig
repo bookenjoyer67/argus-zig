@@ -80,6 +80,12 @@ pub extern fn gpio_read(pin: u32) i32;
 /// FreeRTOS delay: blocks calling task for (ticks * portTICK_PERIOD_MS) milliseconds
 pub extern fn vTaskDelay(ticks: u32) void;
 
+/// LEDC PWM on the white LED (GPIO 35). led_pwm_init() configures an
+/// 8-bit channel at 5 kHz; led_pwm_set(duty) takes 0-255 (0=off, 255=full).
+/// Used by updateLed() for smooth brightness ramps on the threat-level LED.
+pub extern fn led_pwm_init() void;
+pub extern fn led_pwm_set(duty: u32) void;
+
 // GPIO mode/pull constants for gpio_pin_init()
 pub const GPIO_INPUT: u32  = 0;
 pub const GPIO_OUTPUT: u32 = 1;
@@ -282,11 +288,11 @@ pub var tick_ms: u32 = 0;
 // These are deliberately small — the compiler inlines them.
 
 pub fn ledOn() void {
-    _ = gpio_write(PIN_LED, 1);
+    led_pwm_set(255);
 }
 
 pub fn ledOff() void {
-    _ = gpio_write(PIN_LED, 0);
+    led_pwm_set(0);
 }
 
 /// Read the PRG button. Returns true when pressed.
@@ -302,6 +308,91 @@ pub fn buttonPressed() bool {
 pub fn delayMs(ms: u32) void {
     vTaskDelay(ms / portTICK_PERIOD_MS);
     tick_ms +%= ms;
+}
+
+// ================================================================
+// MODE + THREAT-LEVEL LED STATE MACHINE
+// ================================================================
+//
+// The white LED communicates threat level at a glance via LEDC PWM
+// brightness patterns. updateLed() is called every main-loop iteration
+// and is fully non-blocking (it derives the pattern from tick_ms phase),
+// except for the rare stealth aliveness micro-blink.
+
+/// Stealth mode: OLED off, LED dark (except a 60s aliveness blink).
+/// Scanning continues in the background. Toggled by double-press.
+pub var stealth_mode: bool = false;
+
+/// Set true if a hardware init step failed (e.g. OLED I2C). Drives the
+/// LED error pattern at runtime so a headless device still reports the fault.
+pub var init_failed: bool = false;
+
+/// Only threats seen within this window drive the LED (scores never decay).
+const THREAT_RECENCY_MS: u32 = 15000;
+
+/// Peak duty for the gentle "pulse" states (full strobe uses 255).
+const LED_PULSE_PEAK: u32 = 200;
+
+/// Timestamp of the last stealth aliveness micro-blink.
+var led_alive_last: u32 = 0;
+
+/// Highest confidence score among trackers seen in the last THREAT_RECENCY_MS.
+fn currentThreatLevel() u8 {
+    var best: u8 = 0;
+    for (0..tracker_count) |i| {
+        if ((tick_ms -% trackers[i].last_seen) > THREAT_RECENCY_MS) continue;
+        if (trackers[i].score > best) best = trackers[i].score;
+    }
+    return best;
+}
+
+/// Triangle-wave duty: ramps 0 → peak → 0 over `period` ms.
+fn triangleDuty(phase: u32, period: u32, peak: u32) u32 {
+    const half = period / 2;
+    if (phase < half) return peak * phase / half;
+    return peak * (period - phase) / half;
+}
+
+/// Drive the white LED based on mode and threat level. Non-blocking.
+///   Error:    3 fast blinks + pause (overrides everything)
+///   Stealth:  dark, 5ms aliveness blink every 60s
+///   Targeted: 5 Hz full strobe        (score >= 85)
+///   Watched:  double-blink / 1s        (score 70-84)
+///   Aware:    slow fade pulse / 2s     (score 40-69)
+///   Clear:    off
+pub fn updateLed() void {
+    if (init_failed) {
+        const p = tick_ms % 1600;
+        const on = (p < 60) or (p >= 160 and p < 220) or (p >= 320 and p < 380);
+        led_pwm_set(if (on) 255 else 0);
+        return;
+    }
+
+    if (stealth_mode) {
+        if ((tick_ms -% led_alive_last) >= 60000) {
+            led_alive_last = tick_ms;
+            led_pwm_set(40);
+            delayMs(5);
+            led_pwm_set(0);
+        } else {
+            led_pwm_set(0);
+        }
+        return;
+    }
+
+    const level = currentThreatLevel();
+    if (level >= scanner.SCORE_CERT) {
+        const p = tick_ms % 200;
+        led_pwm_set(if (p < 100) 255 else 0);
+    } else if (level >= scanner.SCORE_HIGH) {
+        const p = tick_ms % 1000;
+        const on = (p < 60) or (p >= 180 and p < 240);
+        led_pwm_set(if (on) 255 else 0);
+    } else if (level >= scanner.SCORE_MED) {
+        led_pwm_set(triangleDuty(tick_ms % 2000, 2000, LED_PULSE_PEAK));
+    } else {
+        led_pwm_set(0);
+    }
 }
 
 // ================================================================
@@ -329,26 +420,21 @@ export fn zig_main() callconv(.c) void {
     // ESP-IDF gpio_config() — a real ABI symbol that configures direction,
     // pull resistors, and interrupt state in a single call.
 
-    _ = gpio_pin_init(PIN_LED, GPIO_OUTPUT, GPIO_PULL_NONE);
+    led_pwm_init();
     _ = gpio_pin_init(PIN_BUTTON, GPIO_INPUT, GPIO_PULL_UP);
 
-    // --- Boot animation ---
-    // Two quick LED blinks to confirm the board is alive.
-    // This runs before the OLED is initialized (I2C not ready yet),
-    // so the LED is the earliest sign of life.
-
-    ledOn();  delayMs(150);
-    ledOff(); delayMs(100);
-    ledOn();  delayMs(150);
-    ledOff();
-
-    // Quick LED blink — visual boot confirmation
-    ledOn();  delayMs(50); ledOff();
+    // --- Boot sequence ---
+    // The LED is the earliest sign of life (OLED I2C isn't ready yet).
+    //   0ms:   solid on (power good)
+    //   ~200ms: off, then a quick double-blink (firmware booted)
+    ledOn();  delayMs(200);
+    ledOff(); delayMs(80);
+    ledOn();  delayMs(40); ledOff(); delayMs(80);
+    ledOn();  delayMs(40); ledOff(); delayMs(80);
 
     // --- Display init ---
     // Vext (GPIO 36) controls the switched 3.3V rail via P-channel MOSFET.
     // Active LOW: pull LOW to enable Vext, HIGH to disable.
-    // The OLED may be powered from Vext on some Heltec V3 revisions.
     // Enable it before resetting/initializing the display.
 
     _ = gpio_pin_init(PIN_VEXT, GPIO_OUTPUT, GPIO_PULL_NONE);
@@ -356,12 +442,9 @@ export fn zig_main() callconv(.c) void {
     delayMs(50);                    // let power rail stabilize
 
     // Reset the SSD1306 via GPIO 21, then initialize I2C and send
-    // the init sequence. If I2C init fails, blink LED 3x fast and
-    // continue headless — the device works without the OLED.
-    //
-    // Timing: RST low for 10ms ensures a clean reset regardless of
-    // power-on state. 10ms post-reset lets the SSD1306 stabilize
-    // before we start sending commands.
+    // the init sequence. If I2C init fails, set init_failed so the
+    // runtime LED state machine shows the error pattern, and continue
+    // headless — the device still scans without the OLED.
 
     _ = gpio_pin_init(PIN_OLED_RST, GPIO_OUTPUT, GPIO_PULL_NONE);
     _ = gpio_write(PIN_OLED_RST, 0);   // hold in reset
@@ -370,14 +453,19 @@ export fn zig_main() callconv(.c) void {
     delayMs(100);
 
     if (oled_i2c_init() != 0) {
-        // OLED not responding — blink LED 3x fast, continue headless
+        // OLED not responding — flag the fault and blink an error code.
+        // updateLed() then repeats the error pattern for the whole session.
+        init_failed = true;
         ledOn();  delayMs(50); ledOff(); delayMs(50);
         ledOn();  delayMs(50); ledOff(); delayMs(50);
         ledOn();  delayMs(50); ledOff();
     } else {
         display.oledInit();
-        display.oledClear();
-        display.drawPage();
+        display.drawBoot("");          // big "ARGUS" logo
+        delayMs(400);
+        display.drawBoot("Scanning...");
+        delayMs(400);
+        display.drawPage();            // flip to summary
     }
 
     // Restore session counter from SPIFFS
@@ -396,6 +484,7 @@ export fn zig_main() callconv(.c) void {
     //   5. Sleeps 10ms
 
     var had_new: bool = false; // true if a new tracker was detected this iteration
+    var last_draw_ms: u32 = 0; // throttles live page refresh
 
     while (true) {
         had_new = false;
@@ -435,7 +524,6 @@ export fn zig_main() callconv(.c) void {
             for (0..tracker_count) |i| {
                 if (trackers[i].score > best) best = trackers[i].score;
             }
-            display.alertLed(best);
             // Broadcast highest-scoring detection over LoRa mesh
             if (best >= scanner.SCORE_MED) {
                 for (0..tracker_count) |i| {
@@ -504,7 +592,6 @@ export fn zig_main() callconv(.c) void {
             for (0..tracker_count) |i| {
                 if (trackers[i].score > best) best = trackers[i].score;
             }
-            display.alertLed(best);
             if (best >= scanner.SCORE_MED) {
                 for (0..tracker_count) |i| {
                     if (trackers[i].score == best) {
@@ -516,14 +603,16 @@ export fn zig_main() callconv(.c) void {
         }
 
         // --- Button handling ---
-        // Debounce: wait 50ms after first press, re-read.
-        // If still pressed, it's a real press (not noise).
-        // Block until released to avoid re-triggering.
+        // Debounce 50ms, then measure hold time:
+        //   >= 1200ms  → long press (CSV export, ignored in stealth)
+        //   short      → wait ~350ms for a 2nd press:
+        //                  2nd press → double-press toggles stealth mode
+        //                  otherwise → single press cycles the page
+        // Double-press works from any page/state so stealth is always reachable.
 
         if (buttonPressed()) {
             delayMs(50);
             if (buttonPressed()) {
-                // Check for long press (>1 second hold)
                 var hold_ms: u32 = 50;
                 while (buttonPressed() and hold_ms < 15200) {
                     delayMs(50);
@@ -531,40 +620,64 @@ export fn zig_main() callconv(.c) void {
                 }
 
                 if (hold_ms >= 1200) {
-                    // Long press — LED blink, then CSV dump over serial
-                    ledOn();  delayMs(50); ledOff();
-                    spiffs_csv_export();
-                    // Very long press (>15s) — also clear CSV after dump
-                    if (hold_ms >= 15000) {
-                        delayMs(200);
-                        _ = spiffs_clear_csv();
+                    // Long press — CSV dump over serial (suppressed in stealth)
+                    if (!stealth_mode) {
+                        ledOn();  delayMs(50); ledOff();
+                        spiffs_csv_export();
+                        // Very long press (>15s) — also clear CSV after dump
+                        if (hold_ms >= 15000) {
+                            delayMs(200);
+                            _ = spiffs_clear_csv();
+                        }
                     }
-                    // Wait for release
                     while (buttonPressed()) {
                         delayMs(10);
                     }
                 } else {
-                    // Short press: cycle to next page
-                    display.current_page = (display.current_page + 1) % display.NUM_PAGES;
-                    delayMs(40); // brief delay for tactile feel
-                    while (buttonPressed()) {
+                    // Short press released — watch for a second press
+                    var waited: u32 = 0;
+                    var double_press = false;
+                    while (waited < 350) {
+                        if (buttonPressed()) { double_press = true; break; }
                         delayMs(10);
+                        waited += 10;
+                    }
+
+                    if (double_press) {
+                        // Double-press — toggle stealth mode
+                        delayMs(40); // debounce second press
+                        stealth_mode = !stealth_mode;
+                        if (stealth_mode) {
+                            display.oledDisplayOff();
+                            led_pwm_set(0);
+                        } else {
+                            display.oledDisplayOn();
+                        }
+                        while (buttonPressed()) {
+                            delayMs(10);
+                        }
+                    } else if (!stealth_mode) {
+                        // Single press — cycle to next page
+                        display.current_page = (display.current_page + 1) % display.NUM_PAGES;
                     }
                 }
 
-                display.drawPage();
+                if (!stealth_mode) display.drawPage();
             }
         }
 
-        // --- Heartbeat LED ---
-        // Brief flash every 3 seconds to show the device is alive.
-        // 10ms on, then off. Uses ~0.003% duty cycle, negligible power.
-
-        if (tick_ms % 1500 == 0) {
-            ledOn();
-            delayMs(10);
-            ledOff();
+        // --- Live page refresh ---
+        // Redraw every page at ~2 Hz so counts, RSSI, history bars, and
+        // mesh peer lists update without requiring a button press.
+        if (!stealth_mode and (tick_ms -% last_draw_ms) >= 500) {
+            display.drawPage();
+            last_draw_ms = tick_ms;
         }
+
+        // --- Threat-level LED ---
+        // Non-blocking PWM pattern reflecting the highest recent threat score,
+        // or the stealth / error state. Replaces the old heartbeat blink.
+        updateLed();
 
         // --- LoRa mesh polling ---
         // Check for received mesh packets, process into tracker table.

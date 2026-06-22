@@ -183,6 +183,51 @@ int battery_read_mv(void) {
 }
 
 // ================================================================
+// LED PWM — GPIO 35 white LED via LEDC for brightness fading
+// ================================================================
+//
+// The threat-level LED uses smooth brightness ramps ("pulse" states),
+// which a plain GPIO on/off cannot produce. LEDC drives GPIO 35 with
+// an 8-bit duty cycle at 5 kHz (well above the flicker-fusion threshold).
+//
+// led_pwm_set(duty): duty is 0-255. 0 = off, 255 = full bright.
+// Called frequently from the Zig main loop's updateLed().
+
+#include "driver/ledc.h"
+
+#define LED_PWM_GPIO       35
+#define LED_PWM_TIMER      LEDC_TIMER_0
+#define LED_PWM_CHANNEL    LEDC_CHANNEL_0
+#define LED_PWM_MODE       LEDC_LOW_SPEED_MODE   // ESP32-S3 has only low-speed mode
+
+void led_pwm_init(void) {
+    ledc_timer_config_t timer = {
+        .speed_mode      = LED_PWM_MODE,
+        .timer_num       = LED_PWM_TIMER,
+        .duty_resolution = LEDC_TIMER_8_BIT,
+        .freq_hz         = 5000,
+        .clk_cfg         = LEDC_AUTO_CLK,
+    };
+    ledc_timer_config(&timer);
+
+    ledc_channel_config_t channel = {
+        .gpio_num   = LED_PWM_GPIO,
+        .speed_mode = LED_PWM_MODE,
+        .channel    = LED_PWM_CHANNEL,
+        .timer_sel  = LED_PWM_TIMER,
+        .duty       = 0,
+        .hpoint     = 0,
+    };
+    ledc_channel_config(&channel);
+}
+
+void led_pwm_set(uint32_t duty) {
+    if (duty > 255) duty = 255;
+    ledc_set_duty(LED_PWM_MODE, LED_PWM_CHANNEL, duty);
+    ledc_update_duty(LED_PWM_MODE, LED_PWM_CHANNEL);
+}
+
+// ================================================================
 // app_main — FreeRTOS main task entry
 // ================================================================
 //

@@ -26,7 +26,7 @@ Skip sections you don't need yet. Come back when you're stuck.
 4. **When stuck on a Zig error:** Search `zig <error message>`.
    Zig's error messages are excellent — read them before Googling.
 
----
+
 
 ## Embedded Zig on ESP32
 
