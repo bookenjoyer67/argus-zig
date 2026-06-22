@@ -256,9 +256,10 @@ function renderFeed(dets){
       (feedFilter==='tracker' && ['airtag','tile','samsung','findmy'].includes(d.kind)) ||
       d.kind===feedFilter)
     .map(d=>{ const src=d.source==='mesh'?' <span style="opacity:.6">(mesh)</span>':' (direct)';
+      const follow = d.followed ? ' <span style="color:var(--corrupt);font-weight:700">\u26a0 FOLLOWING</span>' : '';
       return `<tr class="k-${d.kind}"><td>${(d.kind||'?').toUpperCase().slice(0,3)}</td>
         <td class="mono">${d.oui}</td><td class="mono">${d.rssi}</td>
-        <td>${d.level}</td><td class="mono">${d.methods}</td><td>${src}</td></tr>`; });
+        <td>${d.level}</td><td class="mono">${d.methods}</td><td>${src}${follow}</td></tr>`; });
   $('feed').innerHTML = rows.length ? rows.join('') : '<tr><td>No matching detections.</td></tr>';
   updateMapStats();
 }

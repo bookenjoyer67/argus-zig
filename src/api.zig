@@ -113,6 +113,7 @@ pub export fn zig_api_status(out: [*]u8, max: u32) callconv(.c) u32 {
     b.add("\"battery_pct\":{d},", .{display.batteryPct(mv)});
     b.add("\"surv_count\":{d},", .{surv});
     b.add("\"track_count\":{d},", .{c.track});
+    b.add("\"followed_count\":{d},", .{scanner.followedCount()});
     b.add("\"surv_breakdown\":{{\"flock_camera\":{d},\"wifi_device\":{d},\"drone\":{d},\"raven\":{d},\"camera\":{d}}},", .{
         c.flock_camera, c.wifi_device, c.drone, c.raven, c.camera,
     });
@@ -153,6 +154,7 @@ pub export fn zig_api_detections(out: [*]u8, max: u32) callconv(.c) u32 {
         addMethods(&b, t.methods);
         b.add(",", .{});
         b.add("\"source\":\"{s}\",", .{if (t.source == 1) "mesh" else "direct"});
+        b.add("\"followed\":{s},", .{boolStr(scanner.isFollowed(t))});
         const dlat = if (t.source == 1) t.mesh_lat else scanner.gps_lat;
         const dlon = if (t.source == 1) t.mesh_lon else scanner.gps_lon;
         b.add("\"lat\":{d},", .{dlat});

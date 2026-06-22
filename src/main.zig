@@ -404,6 +404,8 @@ pub const TrackerEntry = struct {
     source: u8,              // 0 = direct (this unit), 1 = mesh (peer-relayed)
     mesh_lat: i32 = 0,       // GPS from a mesh detection (source == 1)
     mesh_lon: i32 = 0,       // GPS from a mesh detection (source == 1)
+    first_seen: u32 = 0,     // tick_ms of the first sighting this session
+    sightings: u16 = 1,      // how many times this MAC has been seen
 };
 
 pub var trackers: [MAX_TRACKERS]TrackerEntry = undefined;

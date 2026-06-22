@@ -115,10 +115,6 @@ const BLE_SIGNATURES = [_]BleSignature{
     .{ .company_id = 0x0171, .service_uuids = &.{}, .tracker_type = .camera, .method = METHOD_SIDEWALK },
     // Chipolo trackers (Immediate Alert service 0x1802)
     .{ .company_id = null, .service_uuids = &.{0x1802}, .tracker_type = .unknown, .method = METHOD_TILE },
-    // Fitbit / wearables (company ID 0x0059)
-    .{ .company_id = 0x0059, .service_uuids = &.{}, .tracker_type = .unknown, .method = METHOD_BLE_NAME },
-    // Tesla phone key (BLE key fob service 0x1530)
-    .{ .company_id = null, .service_uuids = &.{0x1530}, .tracker_type = .unknown, .method = METHOD_BLE_NAME },
     // Tile (older style via manufacturer 0x0224)
     .{ .company_id = 0x0224, .service_uuids = &.{}, .tracker_type = .tile, .method = METHOD_TILE },
 };
@@ -484,6 +480,7 @@ pub fn trackDevice(mac: [6]u8, result: ClassResult, rssi: i8) bool {
             if (result.kind != .unknown) main.trackers[i].kind = result.kind;
             if (rssi > main.trackers[i].rssi) main.trackers[i].rssi = rssi;
             main.trackers[i].last_seen = main.tick_ms;
+            main.trackers[i].sightings +|= 1;
             // Push RSSI into 5-value history ring buffer for trend detection
             main.trackers[i].rssi_history[main.trackers[i].rssi_hidx] = rssi;
             main.trackers[i].rssi_hidx +%= 1;
@@ -507,6 +504,8 @@ pub fn trackDevice(mac: [6]u8, result: ClassResult, rssi: i8) bool {
         .rssi_history = [_]i8{0} ** 5,
         .rssi_hidx = 0,
         .source = 0,
+        .first_seen = main.tick_ms,
+        .sightings = 1,
     };
 
     if (main.tracker_count < main.MAX_TRACKERS) {
@@ -524,6 +523,37 @@ pub fn trackDevice(mac: [6]u8, result: ClassResult, rssi: i8) bool {
         main.trackers[oldest_idx] = entry;
     }
     return true;
+}
+
+// ================================================================
+// FOLLOW DETECTION — a static-MAC tracker lingering near you
+// ================================================================
+//
+// Splits "a tracker that is following you" from the ambient Find My mesh.
+// Randomized-MAC devices (AirTags away from owner, iPhones) rotate their
+// address ~every 15 min, so they can't be correlated across rotations by
+// MAC — those stay ambient noise. A STATIC-MAC consumer tracker seen many
+// times over a sustained span is the one worth flagging.
+
+pub const FOLLOW_MIN_SPAN_MS: u32 = 5 * 60 * 1000; // lingered 5+ minutes
+pub const FOLLOW_MIN_SIGHTINGS: u16 = 5;           // seen 5+ times
+
+pub fn isFollowed(t: main.TrackerEntry) bool {
+    if ((t.mac[0] & 0x02) != 0) return false; // randomized MAC — not correlatable
+    switch (t.kind) {
+        .airtag, .tile, .samsung, .findmy => {},
+        else => return false,
+    }
+    if (t.sightings < FOLLOW_MIN_SIGHTINGS) return false;
+    return (t.last_seen -% t.first_seen) >= FOLLOW_MIN_SPAN_MS;
+}
+
+pub fn followedCount() u32 {
+    var n: u32 = 0;
+    for (0..main.tracker_count) |i| {
+        if (isFollowed(main.trackers[i])) n += 1;
+    }
+    return n;
 }
 
 // ================================================================
