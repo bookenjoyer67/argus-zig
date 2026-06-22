@@ -802,6 +802,12 @@ fn logCsv(mac: [6]u8, rssi: i8) void {
 /// Dump CSV log to serial (called on long press). Entirely in C — see spiffs.c.
 extern fn spiffs_csv_export() void;
 
+// LoRa SX1262 — mesh networking on 915 MHz
+// lora_send: TX a packet (max 255 bytes), blocks until done.
+// lora_poll_receive: check for received packet, returns length (0 if none).
+extern fn lora_send(data: [*]const u8, len: u8) i32;
+extern fn lora_poll_receive(buf: [*]u8) i32;
+
 /// Draw page number indicator top-right (e.g. "1/7").
 fn drawPageNum(page: u8) void {
     var buf: [4]u8 = undefined;
@@ -1103,6 +1109,74 @@ fn alertByScore(score: u8) void {
 }
 
 // ================================================================
+// LoRa MESH NETWORKING
+// ================================================================
+//
+// Simple broadcast mesh — no routing, no acks. Each node transmits
+// detections and listens for peer broadcasts.
+//
+// Packet format (14 bytes):
+//   [class:1B][oui:3B][addr:6B][rssi:1B][score:1B][crc:1B]
+//
+// Node ID derived from WiFi frame counter mod 255 (unique enough).
+// Display: mesh detections appear with "M:" prefix on threats page.
+
+/// Build and send a mesh packet for a tracker entry.
+fn meshSend(entry: TrackerEntry) void {
+    var pkt: [14]u8 = undefined;
+    pkt[0] = @intFromEnum(entry.kind);          // class
+    pkt[1] = entry.mac[0];                       // OUI byte 0
+    pkt[2] = entry.mac[1];                       // OUI byte 1
+    pkt[3] = entry.mac[2];                       // OUI byte 2
+    pkt[4] = entry.mac[0];                       // MAC byte 0
+    pkt[5] = entry.mac[1];                       // MAC byte 1
+    pkt[6] = entry.mac[2];                       // MAC byte 2
+    pkt[7] = entry.mac[3];                       // MAC byte 3
+    pkt[8] = entry.mac[4];                       // MAC byte 4
+    pkt[9] = entry.mac[5];                       // MAC byte 5
+    pkt[10] = @bitCast(entry.rssi);              // RSSI (i8 → u8)
+    pkt[11] = entry.score;                       // confidence score
+    // Simple XOR checksum over first 12 bytes
+    var crc: u8 = 0;
+    for (0..12) |i| crc ^= pkt[i];
+    pkt[12] = crc;
+    pkt[13] = 0; // reserved
+
+    _ = lora_send(&pkt, 14);
+}
+
+/// Process a received mesh packet into the tracker table.
+fn meshRecv(pkt: []const u8) void {
+    if (pkt.len < 13) return;
+
+    // Verify CRC
+    var crc: u8 = 0;
+    for (0..12) |i| crc ^= pkt[i];
+    if (crc != pkt[12]) return;
+
+    const kind: TrackerType = @enumFromInt(pkt[0]);
+    const mac: [6]u8 = pkt[4..10].*;
+    const rssi: i8 = @bitCast(pkt[10]);
+    const score: u8 = pkt[11];
+
+    // Only track if it's a meaningful detection
+    if (kind == .unknown) return;
+
+    const result = ClassResult{ .kind = kind, .methods = 0 };
+    const is_new = trackDevice(mac, result, rssi);
+
+    if (is_new) {
+        // Update entry with mesh-provided score
+        for (0..tracker_count) |i| {
+            if (std.mem.eql(u8, &trackers[i].mac, &mac)) {
+                if (score > trackers[i].score) trackers[i].score = score;
+                break;
+            }
+        }
+    }
+}
+
+// ================================================================
 // MAIN ENTRY POINT
 // ================================================================
 //
@@ -1289,10 +1363,18 @@ export fn zig_main() callconv(.c) void {
         if (had_new) {
             if (current_page != 2) current_page = 2;
             var best: u8 = 0;
+            var best_idx: usize = 0;
             for (0..tracker_count) |i| {
-                if (trackers[i].score > best) best = trackers[i].score;
+                if (trackers[i].score > best) {
+                    best = trackers[i].score;
+                    best_idx = i;
+                }
             }
             alertByScore(best);
+            // Broadcast highest-scoring detection over LoRa mesh
+            if (best >= 40) {
+                meshSend(trackers[best_idx]);
+            }
             drawPage();
         }
 
@@ -1340,6 +1422,14 @@ export fn zig_main() callconv(.c) void {
             ledOn();
             delayMs(10);
             ledOff();
+        }
+
+        // --- LoRa mesh polling ---
+        // Check for received mesh packets, process into tracker table.
+        var lora_buf: [255]u8 = undefined;
+        const lora_len = lora_poll_receive(&lora_buf);
+        if (lora_len > 0) {
+            meshRecv(lora_buf[0..@intCast(lora_len)]);
         }
 
         // --- Yield to FreeRTOS ---

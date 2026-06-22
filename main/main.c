@@ -38,6 +38,9 @@ extern int wifi_scan_init(void);
 // Defined in spiffs.c
 extern int spiffs_init_storage(void);
 
+// Defined in lora.c
+extern int lora_init(void);
+
 // ================================================================
 // OLED I2C helpers — called from Zig via extern fn
 // ================================================================
@@ -234,6 +237,9 @@ void app_main(void) {
     // --- Mount SPIFFS for detection logging ---
     // CSV log at /spiffs/detections.csv, session counter at /spiffs/session.dat
     spiffs_init_storage();
+
+    // --- Initialize LoRa radio for mesh networking ---
+    lora_init();
 
     // --- Hand off to Zig ---
     //
