@@ -34,6 +34,7 @@ jobs:
           VER=${TAG#v}
           if [ -n "$VER" ]; then
             echo "{\"version\":\"$VER\",\"url\":\"https://bookenjoyer67.github.io/argus-zig/web/firmware/argus-zig.bin\"}" > web/firmware/version.json
+            jq --arg v "$VER" '.version=$v' web/firmware/manifest.json > /tmp/m.json && mv /tmp/m.json web/firmware/manifest.json
           else
             echo "no release yet — flasher/OTA will 404 until one exists"
           fi
