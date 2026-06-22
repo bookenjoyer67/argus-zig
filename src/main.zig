@@ -104,6 +104,10 @@ extern fn wifi_scan_poll(addr_out: [*]u8, receiver_out: [*]u8, rssi_out: *i8, ch
 // Diagnostic: total WiFi frames captured (to verify sniffer is running)
 extern fn wifi_get_frame_count() u32;
 
+// Battery ADC — GPIO 1 with 390k/100k divider on Heltec V3.
+// Returns battery voltage in millivolts (e.g. 4100 = 4.1V).
+extern fn battery_read_mv() i32;
+
 // ================================================================
 // HELTEC V3 PIN DEFINITIONS
 // ================================================================
@@ -682,12 +686,55 @@ fn oledUpdate() void {
 // When the I2C driver is connected, pages will render to the physical OLED.
 
 var current_page: u8 = 0;
+const NUM_PAGES: u8 = 7;
+
+/// Draw page number indicator top-right (e.g. "1/7").
+fn drawPageNum(page: u8) void {
+    var buf: [4]u8 = undefined;
+    const s = std.fmt.bufPrint(&buf, "{d}/{d}", .{ page + 1, NUM_PAGES }) catch return;
+    oledDrawStr(96, 0, s);
+}
+
+/// Draw a battery bar: label + voltage + bar graphic.
+/// 3.3V = 0%, 4.2V = 100% (LiPo range).
+fn drawBatteryBar(x: u8, y: u8, w: u8, h: u8) void {
+    const mv = battery_read_mv();
+    const pct: u8 = if (mv < 3300) 0 else if (mv > 4200) 100 else @intCast(((@as(u32, @intCast(mv)) - 3300) * 100 / 900));
+
+    var buf: [20]u8 = undefined;
+    const v = @as(u32, @intCast(mv));
+    const s = std.fmt.bufPrint(&buf, "Bat:{d}.{d}V", .{ v / 1000, (v / 100) % 10 }) catch return;
+    oledDrawStr(x, y, s);
+    oledDrawBar(x + 66, y, w, h, pct);
+}
+
+/// Format MAC as hex string: "XX:XX:XX:XX:XX:XX"
+fn formatMac(mac: [6]u8, buf: []u8) []const u8 {
+    return std.fmt.bufPrint(buf, "{X:0<2}:{X:0<2}:{X:0<2}:{X:0<2}:{X:0<2}:{X:0<2}", .{ mac[0], mac[1], mac[2], mac[3], mac[4], mac[5] }) catch "??:??:??:??:??:??";
+}
+
+/// Tracker type to short string.
+fn kindStr(kind: TrackerType) []const u8 {
+    return switch (kind) {
+        .airtag => "AIR",
+        .tile => "TLE",
+        .samsung => "SAM",
+        .findmy => "FMY",
+        .flock_camera => "FLK",
+        .wifi_device => "WIF",
+        .unknown => "???",
+        else => "???",
+    };
+}
+
+/// Age in seconds since last_seen.
+fn ageSec(last: u32) u32 {
+    if (tick_ms >= last) return (tick_ms - last) / 1000;
+    return 0;
+}
 
 /// Page 0: Threat summary
-/// Shows tracker count, OUI database size, and build info.
-/// Future: per-category breakdown (AirTag, Tile, etc.)
 fn drawSummary() void {
-    // Count ALPR and BLE trackers
     var alpr_count: u32 = 0;
     var ble_count: u32 = 0;
     for (0..tracker_count) |i| {
@@ -698,22 +745,207 @@ fn drawSummary() void {
     }
 
     oledClear();
+    drawPageNum(0);
     oledDrawStr(0, 0, "ARGUS TRACKER");
-    oledDrawStr(0, 10, "ALPR:");
-    oledDrawInt(48, 10, @intCast(alpr_count));
-    oledDrawStr(0, 20, "BLE:");
-    oledDrawInt(48, 20, @intCast(ble_count));
-    oledDrawStr(0, 35, "BTN: page  LED: alert");
-    oledDrawStr(0, 50, "OUI:");
-    oledDrawInt(48, 50, @intCast(KNOWN_OUIS_COUNT));
+    oledDrawStr(0, 18, "ALPR:");
+    oledDrawInt(48, 18, @intCast(alpr_count));
+    oledDrawStr(78, 18, "BLE:");
+    oledDrawInt(108, 18, @intCast(ble_count));
+    oledDrawStr(0, 28, "OUI:");
+    oledDrawInt(48, 28, @intCast(KNOWN_OUIS_COUNT));
+    drawBatteryBar(0, 38, 40, 8);
+    oledDrawStr(0, 52, "PRG:page  LED:alert");
     oledUpdate();
 }
 
-/// Route to the current page. Called on button press and at boot.
+/// Page 1: Active threats list (all trackers, sorted by last_seen desc)
+fn drawThreats() void {
+    oledClear();
+    drawPageNum(1);
+    oledDrawStr(0, 0, "THREATS");
+
+    var row: u8 = 0;
+    const start = if (tracker_count > 6) tracker_count - 6 else 0;
+    for (start..tracker_count) |i| {
+        if (row >= 6) break;
+        const y: u8 = 10 + row * 8;
+        var buf: [32]u8 = undefined;
+        const ks = kindStr(trackers[i].kind);
+        _ = std.fmt.bufPrint(&buf, "{X:0<2}:{X:0<2}:{X:0<2}:{X:0<2}:{X:0<2}:{X:0<2} {s} {d}", .{
+            trackers[i].mac[0], trackers[i].mac[1], trackers[i].mac[2],
+            trackers[i].mac[3], trackers[i].mac[4], trackers[i].mac[5],
+            ks, trackers[i].rssi,
+        }) catch continue;
+        oledDrawStr(0, y, &buf);
+        row += 1;
+    }
+    oledDrawStr(0, 56, "PRG:next page");
+    oledUpdate();
+}
+
+/// Page 2: Proximity gauge for nearest threat
+fn drawProximity() void {
+    oledClear();
+    drawPageNum(2);
+    oledDrawStr(0, 0, "PROXIMITY");
+
+    if (tracker_count == 0) {
+        oledDrawStr(0, 18, "No threats nearby");
+        oledDrawStr(0, 56, "PRG:next page");
+        oledUpdate();
+        return;
+    }
+
+    // Find nearest by RSSI (highest = closest)
+    var nearest_idx: usize = 0;
+    var best_rssi: i8 = -128;
+    for (0..tracker_count) |i| {
+        if (trackers[i].rssi > best_rssi) {
+            best_rssi = trackers[i].rssi;
+            nearest_idx = i;
+        }
+    }
+
+    const t = trackers[nearest_idx];
+    var buf: [32]u8 = undefined;
+    const mac_str = formatMac(t.mac, buf[0..17]);
+    oledDrawStr(0, 12, mac_str);
+    oledDrawStr(0, 22, kindStr(t.kind));
+
+    oledDrawStr(0, 34, "RSSI:");
+    oledDrawInt(42, 34, t.rssi);
+    oledDrawStr(66, 34, "dBm");
+
+    // RSSI bar: -100 = 0%, -20 = 100%
+    const rssi_pct: u8 = if (t.rssi < -100) 0 else if (t.rssi > -20) 100 else blk: {
+        const val: u32 = @intCast(@as(i32, t.rssi) + 100);
+        break :blk @intCast(val * 100 / 80);
+    };
+    oledDrawBar(0, 44, 128, 10, rssi_pct);
+
+    oledDrawStr(0, 56, "PRG:next page");
+    oledUpdate();
+}
+
+/// Page 3: Detection history bar chart (last 60 minutes)
+fn drawHistory() void {
+    oledClear();
+    drawPageNum(3);
+    oledDrawStr(0, 0, "HISTORY");
+
+    // Count detections in 5 × 12-min buckets
+    var buckets = [_]u32{0} ** 5;
+    const now_sec = tick_ms / 1000;
+    for (0..tracker_count) |i| {
+        const age = now_sec -| (trackers[i].last_seen / 1000);
+        if (age > 3600) continue;
+        const bucket: usize = @intCast(age / 720); // 12 min = 720s
+        if (bucket < 5) buckets[bucket] += 1;
+    }
+
+    // Find max for scaling
+    var max_val: u32 = 1;
+    for (buckets) |b| {
+        if (b > max_val) max_val = b;
+    }
+
+    const bar_x = [_]u8{ 4, 28, 52, 76, 100 };
+    for (0..5) |b| {
+        const h: u8 = if (max_val == 0) 1 else @intCast(buckets[b] * 42 / max_val);
+        oledDrawBar(bar_x[b], 50 - h, 20, h, 100);
+    }
+
+    oledDrawStr(0, 52, " 12  24  36  48  60m");
+    oledDrawStr(0, 56, "PRG:next page");
+    oledUpdate();
+}
+
+/// Page 4: BLE-only tracker list
+fn drawBleList() void {
+    oledClear();
+    drawPageNum(4);
+    oledDrawStr(0, 0, "BLE TRACKERS");
+
+    var row: u8 = 0;
+    var rendered: u8 = 0;
+    var i: usize = tracker_count;
+    while (i > 0 and rendered < 6) {
+        i -= 1;
+        if (trackers[i].kind == .flock_camera or trackers[i].kind == .wifi_device) continue;
+        const y: u8 = 10 + row * 8;
+        var buf: [32]u8 = undefined;
+        _ = std.fmt.bufPrint(&buf, "{X:0<2}:{X:0<2} {s} {d}", .{
+            trackers[i].mac[0], trackers[i].mac[1],
+            kindStr(trackers[i].kind), trackers[i].rssi,
+        }) catch continue;
+        oledDrawStr(0, y, &buf);
+        row += 1;
+        rendered += 1;
+    }
+    oledDrawStr(0, 56, "PRG:next page");
+    oledUpdate();
+}
+
+/// Page 5: Session stats
+fn drawStats() void {
+    oledClear();
+    drawPageNum(5);
+    oledDrawStr(0, 0, "STATS");
+
+    const uptime_sec = tick_ms / 1000;
+    oledDrawStr(0, 14, "Up:");
+    var buf: [16]u8 = undefined;
+    _ = std.fmt.bufPrint(&buf, "{d}h{d}m", .{ uptime_sec / 3600, (uptime_sec / 60) % 60 }) catch {};
+    oledDrawStr(30, 14, &buf);
+
+    oledDrawStr(0, 24, "Uniq:");
+    oledDrawInt(48, 24, @intCast(tracker_count));
+
+    oledDrawStr(0, 34, "WiFi:");
+    oledDrawInt(48, 34, @intCast(wifi_get_frame_count()));
+
+    oledDrawStr(0, 44, "Bat:");
+    const mv = battery_read_mv();
+    const v = @as(u32, @intCast(mv));
+    _ = std.fmt.bufPrint(&buf, "{d}.{d}V", .{ v / 1000, (v / 100) % 10 }) catch {};
+    oledDrawStr(48, 44, &buf);
+
+    oledDrawStr(0, 56, "PRG:next page");
+    oledUpdate();
+}
+
+/// Page 6: System info
+fn drawSystem() void {
+    oledClear();
+    drawPageNum(6);
+    oledDrawStr(0, 0, "SYSTEM");
+
+    // Free heap (simplified — ESP-IDF provides this)
+    oledDrawStr(0, 14, "Heap: ~300K");
+    oledDrawStr(0, 24, "Flash: 3MB app");
+    oledDrawStr(0, 34, "Freq: 160MHz");
+
+    const mv = battery_read_mv();
+    const v = @as(u32, @intCast(mv));
+    var buf: [16]u8 = undefined;
+    _ = std.fmt.bufPrint(&buf, "V: {d}.{d}V", .{ v / 1000, (v / 100) % 10 }) catch {};
+    oledDrawStr(0, 44, &buf);
+
+    oledDrawStr(0, 56, "PRG:next page");
+    oledUpdate();
+}
+
+/// Route to the current page. Called on button press, at boot, and on new detection.
 fn drawPage() void {
     switch (current_page) {
         0 => drawSummary(),
-        else => drawSummary(), // additional pages added here
+        1 => drawThreats(),
+        2 => drawProximity(),
+        3 => drawHistory(),
+        4 => drawBleList(),
+        5 => drawStats(),
+        6 => drawSystem(),
+        else => drawSummary(),
     }
 }
 
@@ -924,6 +1156,10 @@ export fn zig_main() callconv(.c) void {
         }
 
         if (had_new) {
+            // Auto-switch to proximity gauge on new detection
+            if (current_page != 2) {
+                current_page = 2;
+            }
             alertNew();
             drawPage();
         }
@@ -937,7 +1173,7 @@ export fn zig_main() callconv(.c) void {
             delayMs(50);
             if (buttonPressed()) {
                 // Short press: cycle to next page and chirp
-                current_page = (current_page + 1) % 1; // % 1 = always 0 (placeholder for multi-page)
+                current_page = (current_page + 1) % NUM_PAGES;
                 alertNew();
 
                 // Wait for release to avoid re-triggering

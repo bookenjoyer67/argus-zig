@@ -64,11 +64,32 @@ def main():
     with open(SDKCONFIG, 'w') as f:
         f.writelines(new_lines)
 
+    # Also fix partition table — custom 3MB factory (not Kconfig choice, simple override)
+    with open(SDKCONFIG) as f:
+        lines = f.readlines()
+    with open(SDKCONFIG, 'w') as f:
+        for line in lines:
+            if 'CONFIG_PARTITION_TABLE_SINGLE_APP=y' in line:
+                f.write('# CONFIG_PARTITION_TABLE_SINGLE_APP is not set\n')
+            elif 'CONFIG_PARTITION_TABLE_CUSTOM=y' in line:
+                f.write(line)
+            elif 'CONFIG_PARTITION_TABLE_CUSTOM_FILENAME' in line:
+                f.write('CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"\n')
+            elif 'CONFIG_PARTITION_TABLE_FILENAME=' in line and 'CUSTOM' not in line:
+                f.write('CONFIG_PARTITION_TABLE_FILENAME="partitions.csv"\n')
+            else:
+                f.write(line)
+        if not any('CONFIG_PARTITION_TABLE_CUSTOM=y' in l for l in lines):
+            f.write('CONFIG_PARTITION_TABLE_CUSTOM=y\n')
+
     # Verify
     bt_enabled = any('CONFIG_BT_ENABLED=y' in l for l in new_lines)
     nimble_enabled = any('CONFIG_BT_NIMBLE_ENABLED=y' in l for l in new_lines)
-    if bt_enabled and nimble_enabled:
-        print("sdkconfig patched: NimBLE BLE scanning enabled")
+    flash_8mb = any('CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y' in l for l in new_lines)
+    if bt_enabled and nimble_enabled and flash_8mb:
+        print("sdkconfig patched: NimBLE + 8MB flash enabled")
+    elif bt_enabled and nimble_enabled:
+        print("sdkconfig patched: NimBLE enabled (flash size unchanged)")
     else:
         print("Warning: NimBLE may not be properly enabled in sdkconfig")
 

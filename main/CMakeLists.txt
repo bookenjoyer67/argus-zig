@@ -33,5 +33,7 @@ idf_component_register(
         "${IDF_PATH}/components/esp_wifi/include/local"
         "${IDF_PATH}/components/esp_netif/include"
         "${IDF_PATH}/components/esp_event/include"
+        "${IDF_PATH}/components/esp_adc/include"
+        "${IDF_PATH}/components/hal/include"
     REQUIRES nvs_flash bt freertos esp_wifi driver
 )

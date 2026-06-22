@@ -156,6 +156,25 @@ int gpio_read(int pin) {
 }
 
 // ================================================================
+// Battery ADC — GPIO 1, 390k/100k voltage divider
+// ================================================================
+//
+// The Heltec V3 has a VBAT voltage divider: 390kΩ upper, 100kΩ lower.
+// ADC reads at 12-bit resolution (0-4095) with 11dB attenuation
+// (full-scale ~3.3V). Returns battery voltage in millivolts.
+
+#include "driver/adc.h"
+
+int battery_read_mv(void) {
+    adc1_config_width(ADC_WIDTH_BIT_12);
+    adc1_config_channel_atten(ADC1_CHANNEL_1, ADC_ATTEN_DB_11);
+    int raw = adc1_get_raw(ADC1_CHANNEL_1);
+    // Divider ratio: (390k + 100k) / 100k = 4.9
+    // mV = raw * 3300 / 4095 * 490 / 100
+    return raw * 3300 / 4095 * 490 / 100;
+}
+
+// ================================================================
 // app_main — FreeRTOS main task entry
 // ================================================================
 //
