@@ -317,7 +317,7 @@ int lora_send(const uint8_t *data, uint8_t len) {
             lora_set_rx(0);  // back to RX
             return 0;
         }
-        vTaskDelay(pdMS_TO_TICKS(5));
+        vTaskDelay(pdMS_TO_TICKS(50)); // yield to watchdog
     }
 
     printf("Argus: LoRa TX timeout\n");
