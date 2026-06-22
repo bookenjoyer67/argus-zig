@@ -1,138 +1,173 @@
 # Detection Status
 
 What's implemented and what's left from DETECTION.md.
-Last updated: June 21, 2026
+Last updated: June 22, 2026
 
 ---
 
 ## Complete
 
-### §1 — Raven Gunshot Detectors
-- 8 BLE service UUIDs recognized (0x180A, 0x3100, 0x3200, 0x3300, 0x3400, 0x3500, 0x1809, 0x1819)
-- Multi-UUID counting — 3+ UUIDs from same MAC scores higher
-- Firmware version classification: 1.1.x (legacy UUIDs), 1.2.x (GPS/Power/Network), 1.3.x (Upload/Error)
-- Flags: RAVEN_FW_1_1, RAVEN_FW_1_2, RAVEN_FW_1_3 stored in method bitmask
-- Scoring: 70 pts base, FW version flags for display
+### Flock Safety ALPR Cameras
+- 33 MAC OUI prefixes (original 31 + 2 newer deployments)
+- WiFi promiscuous sniffer captures management and data frames
+- SSID "Flock-XXXX" format validation with hex digit check
+- Camera sleep-cycle awareness — detection window depends on camera duty cycle
+- Scoring: OUI match 40 pts, SSID prefix 50 pts, Flock-XXXX format 65 pts
 
-### §2 — Drone Remote ID (WiFi)
-- 802.11 tag 221 (Vendor Specific IE) parsed in wifi.c
-- ASTM OUI check: 3C:EB:FE and 3C:EB:FF
-- Remote ID payload captured, passed to Zig via `rid_out`/`rid_len_out`
-- Message types parsed: Type 0 (Basic ID), Type 1 (Location), Type 2 (Self-ID)
-- Scoring: 85 pts (CERTAIN) — FAA-mandated broadcast, zero false positives
-- Drone OUIs in ouis.txt: DJI (60:60:1f, e4:7f:b2, 34:d2:62), Autel (e8:1f:84), Skydio (58:ed:0e), Parrot (a0:14:3d, 90:03:b7), Yuneec (c8:8e:db)
+### Raven / ShotSpotter Gunshot Sensors
+- 8 BLE service UUIDs (0x180A, 0x3100, 0x3200, 0x3300, 0x3400, 0x3500, 0x1809, 0x1819)
+- Multi-UUID counting — 3+ UUIDs scores higher
+- Firmware version classification: 1.1.x, 1.2.x, 1.3.x
+- Hardware verified: detected on walk test June 21
 
-### §3 — Drone Remote ID (BLE)
-- Service UUID 0xFFFA in BLE_SIGNATURES table
-- Scoring: 60 pts via METHOD_DRONE
+### Drone Remote ID
+- WiFi: ASTM F3411 tag 221 IE parsing with OUI check (3C:EB:FE/FF)
+- BLE: service UUID 0xFFFA in signature table
+- Message types: Basic ID, Location, Self-ID
+- Drone OUIs: DJI (3), Autel, Skydio, Parrot (2), Yuneec
+- Scoring: WiFi Remote ID 85 pts (CERTAIN), BLE Remote ID 60 pts
 
-### §4 — Ring / Amazon Sidewalk
-- Amazon company ID 0x0171 in BLE_SIGNATURES table
-- METHOD_SIDEWALK flag (50 pts)
-- Ring/Blink camera OUIs in ouis.txt: 74:c2:46, 40:b4:cd, 68:54:fd
+### Amazon Sidewalk (Ring / Echo / Tile)
+- BLE manufacturer ID 0x0171
+- Tracker type = .camera (counts toward camera counter)
+- Ring/Blink WiFi OUIs: 3 entries in ouis.txt
+- Camera SSID keyword "ring" added
 
-### §5 — Consumer Surveillance Cameras
-- 12 camera manufacturer OUIs in ouis.txt: Hikvision, Dahua, Reolink, Axis, Bosch, Hanwha
-- Additional smart camera OUIs: Google Nest (3), Arlo (2), Wyze (1)
-- SSID keyword matching (case-insensitive): hikvision, dahua, reolink, camera, cam_
-- METHOD_CAM_SSID flag (30 pts)
-- Camera threat class separate from ALPR
+### Consumer Surveillance Cameras
+- 12 manufacturer OUIs: Hikvision, Dahua, Reolink, Axis, Bosch, Hanwha
+- 6 smart camera OUIs: Google Nest (3), Arlo (2), Wyze (1)
+- SSID keyword matching: hikvision, dahua, reolink, amcrest, camera, cam_, ring
+- Case-insensitive matching
+- Separate .camera threat class from .flock_camera
 
-### §6 — BLE Signature Table
-- Data-driven classification — 8 entries in BLE_SIGNATURES table
-- Adding a new BLE device type is one line in the table, no new parsing code
-- Current signatures: Apple Find My, Tile, Samsung SmartTag, Drone Remote ID BLE, Amazon Sidewalk, Chipolo, Fitbit, Tesla
+### BLE Tracker Classification
+- Data-driven BLE_SIGNATURES table — 8 entries
+- Apple Find My: 0x4C00 + type 0x12, payload length >= 22 for AirTag vs iPhone
+- Tile: service UUID 0xFEED
+- Samsung SmartTag: manufacturer ID 0x0075
+- Chipolo: service UUID 0x1802
+- Fitbit: manufacturer ID 0x0059
+- Tesla phone key: service UUID 0x1530
+- Adding a new signature is one table row
 
-### §7 — Scoring & False Positive Guards (partial)
-- Multi-method corroboration bonus (+20 pts when 2+ methods agree)
-- Strong RSSI bonus (+10 pts above -50 dBm)
-- Randomized MAC penalty (-20 pts for locally-administered addresses)
-- Static MAC bonus (+10 pts)
+### Scoring & False Positive Guards
+- Multi-method corroboration: +20 pts when 2+ methods agree
+- Strong RSSI bonus: +10 pts above -50 dBm
+- Randomized MAC penalty: -20 pts for locally-administered addresses
+- Static MAC bonus: +10 pts
 - SSID Flock-XXXX hex format validation (full 65 pts only with valid hex)
 - Confidence thresholds: MED=40, HIGH=70, CERT=85
-- Carrier probe SSID counting for IMSI catcher research (carrier_probes counter)
-- Camera SSID keywords are case-insensitive
+- Noise rejection: devices with methods==0 not stored in tracker table
+- CSV dedup: only log on first detection, not every sighting
+- History bars: rightmost=recent, leftmost=oldest
 
-### §8 — IMSI Catcher Research
-- Carrier SSID probe counting active: attwifi, VerizonWiFi, xfinitywifi, T-Mobile, vodafone, EE WiFi, Orange, o2wifi
-- `carrier_probes` counter increments on each unique carrier SSID observed
-- Data collection only — no detection alerts yet
+### RSSI Trend Tracking
+- 5-value ring buffer per tracker entry (rssi_history)
+- detectRssiTrend() identifies rise-peak-fall pattern
+- +10 pts bonus for stationary device signature
 
-### §9 — Database Maintenance
-- 73 OUIs in ouis.txt (up from 31)
-- New entries: Flock Safety (2 new), consumer cameras (12), smart cameras (6), drones (6), Ring (3)
-- Compiled at build time via @embedFile + comptime
-- Adding an OUI: edit ouis.txt, rebuild, done
+### IMSI Catcher / Stingray Research
+- Carrier probe SSID counting: attwifi, VerizonWiFi, xfinitywifi, T-Mobile, etc.
+- Burst detection algorithm planned (see STINGRAY.md)
+- Stingray alert flag + display on summary and surveillance pages
+- Probabilistic detection — flagged as STINGRAY? with caveat
+
+### Display / UX
+- 7 OLED pages with 500ms live refresh on all pages
+- Summary: SURV + TRACK counters
+- Surveillance page: filtered to ALPR/drone/raven/camera only
+- Proximity page: big RSSI, trend arrow, distance word, bar
+- History page: 5-bar chart, 12-min buckets, proper ordering
+- Trackers page: renamed from BLE trackers
+- LED threat-level patterns (sleep/scan/clear/watch/targeted/error)
+- Battery voltage + percentage bar
+- GPS status display
+
+### Persistence
+- SPIFFS CSV detection log (detections.csv)
+- Session counters survive reboot
+- CSV export via long-press button over serial
+
+### GPS
+- NEO-6M UART driver on GPIO 4/5, 9600 baud
+- NMEA parsing: $GPGGA and $GPRMC
+- GPS coordinates logged with detections
+- GPS status shown on summary page
+
+### LoRa Mesh
+- SX1262 driver: full opcode set, SPI, BUSY polling, calibration
+- Mesh packet: 14-byte format with CRC
+- meshSend() on high-confidence detection
+- meshRecv() with CRC validation and tracker table integration
 
 ---
 
 ## Not Yet Done
 
-### Priority 1 — Finish What's Started
+### Priority 1
 
-**Drone model text display.** ✅ DONE
-The Remote ID parser now stores the Self-ID text ("DJI Mini 3 Pro") in `drone_model_buf`.
-Displayed on Threats page ("DRN Mini3Pro") and Proximity page (model name below type badge).
-- File: `src/scanner.zig` line 515, `src/display.zig` lines 387, 433
-- Effort: 30 minutes
+**Drone model text display.** Self-ID text captured but discarded with `_ = txt`.
+Store model name for display on proximity and threats pages.
+- File: `src/scanner.zig` line 529
+- Effort: 30 min
 
-**Raven threshold fix.** ✅ DONE
-Confirmed Raven now requires 2+ service UUIDs (was 1). Single 0x180A (Device Info)
-alone is too generic. Single UUID gets METHOD_RAVEN_LOW at 40 pts MED instead of 70 pts HIGH.
-16/16 u16 method flag bits now allocated.
-- File: `src/scanner.zig` lines 218, 121
-- Effort: 15 minutes
+**Real-world tuning.** Scores are reasonable defaults but need field calibration.
+Carry the device, review CSV, adjust weights.
+- Effort: ongoing
 
-### Priority 2 — False Positive Reduction
+### Priority 2
 
-**RSSI trend tracking.** ✅ DONE
-TrackerEntry extended with rssi_history[5] ring buffer + rssi_hidx index.
-trackDevice() pushes each new RSSI observation into the history buffer.
-detectRssiTrend() checks for rise-peak-fall pattern across 3+ sightings —
-a strong indicator of a stationary transmitter (camera, sensor, beacon).
-+10 pts bonus applied after computeScore when trend detected.
-- File: `src/scanner.zig` lines 320, 314-335
-- Effort: 45 minutes
+**Raven threshold tuning.** Single 0x180A UUID triggers 70 pts but is generic.
+Consider requiring 2+ Raven-specific UUIDs before scoring.
+- Effort: 30 min
 
-**Time-window re-detection.**
-Same MAC + same approximate location 5+ minutes apart = fixed installation. Different location every time = mobile device. Track MAC + location hash pairs for re-detection scoring.
-- File: `src/scanner.zig`
+**WiFi channel coverage.** Currently channels 1, 6, 11 only. Full 1-13 scan
+with adaptive dwell times would catch more cameras.
 - Effort: 2 hours
 
-**Real-world tuning.**
-Carry the device for a week. Review CSV logs. Adjust scoring weights based on actual false positive rates. Every environment is different — the current weights are reasonable defaults but need field data.
-- Effort: ongoing, 1 hour/week
+### Priority 3
 
-### Priority 3 — Edge Cases
+**Web dashboard.** Base station mode with WiFi AP, HTTP server, live dashboard.
+Planned in LAYERS_1_2.md. Not started.
+- Effort: 24 hours
 
-**BLE advertisement parsing robustness.**
-The current parser iterates AD structures linearly. Some BLE devices use scan response data (separate from advertisement data). NimBLE may or may not combine them before calling the callback. Verify on real hardware.
-- Effort: 1 hour investigation
-
-**WiFi channel coverage.**
-Currently scans channels 1, 6, 11 only. Flock cameras may use other channels. Full 1-13 channel scan with adaptive dwell times would catch more.
-- Effort: 2 hours
-
-**Raven threshold tuning.**
-1 UUID = 70 pts (HIGH). In practice, a single 0x180A (Device Information) service UUID is generic and appears on many non-Raven devices. Consider requiring 2+ Raven-specific UUIDs before scoring.
-- Effort: 30 minutes
+**OTA updates.** ESP-IDF OTA via GitHub Releases. Requires second partition table.
+- Effort: 4 hours
 
 ---
 
-## What's Been Added Since Initial Commit
+## Threat Classes
 
-| Date | Change |
-|------|--------|
-| Initial | 31 Flock OUIs, basic BLE (AirTag/Tile), SSD1306 framebuffer, buzzer/LED/button |
-| +1 day | WiFi promiscuous sniffer, BLE NimBLE integration, LoRa SX1262 driver, GPS UART, SPIFFS logging, 7 OLED pages, confidence scoring, mesh protocol |
-| +2 days | Module split (main/scanner/display/mesh), 42 new OUIs, BLE_SIGNATURES table, Raven UUIDs + FW classification, Drone Remote ID (WiFi + BLE), Amazon Sidewalk, camera SSID keywords, carrier probe counting, NMEA GPRMC parsing, randomized MAC penalty, CSV GPS coordinates |
+```
+.flock_camera   — Flock Safety ALPR (OUI + SSID corroboration)
+.wifi_device    — WiFi device with known surveillance OUI
+.drone          — Drone Remote ID (ASTM F3411, WiFi or BLE)
+.raven          — Raven/ShotSpotter gunshot sensor (BLE UUIDs)
+.camera         — Consumer/commercial surveillance camera (OUI + SSID)
+.airtag         — Apple AirTag / Find My accessory
+.tile           — Tile tracker
+.samsung        — Samsung SmartTag
+.findmy         — Generic Find My device
+.unknown        — Unclassified (filtered from table, not stored)
+```
+
+Stingray detection is not a TrackerType — it's an alert flag with special display handling.
 
 ---
 
-## Quick Wins (30 min or less each)
+## OUI Database
 
-- Add 3 more camera OUIs to ouis.txt (find them on Wigle.net or IEEE OUI lookup) ✅ Done — Amcrest, Lorex, Uniview
-- Change buzzer alert pattern for CERTAIN detections (edit `alertByScore` in display.zig) — N/A (buzzer removed, LED used)
-- Add a new camera SSID keyword (edit `cam_keywords` in scanner.zig line 241) ✅ Done — added "amcrest"
-- Add a new BLE signature to BLE_SIGNATURES table (scanner.zig line 80) ✅ Done — Tile (older style, manufacturer 0x0224)
-- Change confidence score weights (edit `computeScore` in scanner.zig line 111) — available for tuning after field data
+73 MAC OUI prefixes in `src/ouis.txt`, parsed at compile time:
+
+```
+33 Flock Safety
+ 3 Ring/Blink
+ 3 Google Nest
+ 2 Arlo
+ 1 Wyze
+ 6 Drone (DJI/Autel/Skydio/Parrot/Yuneec)
+12 Surveillance cameras (Hikvision/Dahua/Reolink/Axis/Bosch/Hanwha)
+13 Other surveillance
+```
+
+Adding an OUI: edit the text file, rebuild. No code changes needed.

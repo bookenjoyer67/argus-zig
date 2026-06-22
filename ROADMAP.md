@@ -1,101 +1,103 @@
-# Features — Argus Surveillance Tracker Scanner
+# Development Roadmap — Argus
 
-All phases implemented. Zero external parts needed for basic operation.
+Status as of June 22, 2026. Checked = done, blank = not started.
 
 ---
 
-## Detection Coverage
+## Phase 0: Visual Output ✓
 
-| Feature | Method | Hardware | Status |
-|---------|--------|----------|--------|
-| **Flock Safety ALPR cameras** | WiFi promiscuous OUI + SSID matching (31 OUIs) | None | ✓ |
-| **AirTag / Find My** | BLE manufacturer 0x4C00 + type 0x12 | None | ✓ |
-| **Tile trackers** | BLE service UUID 0xFEED | None | ✓ |
-| **Samsung SmartTag** | BLE manufacturer 0x0075 | None | ✓ |
-| **Drone Remote ID** | BLE UUID 0xFFFA + drone OUIs (ASTM F3411) | None | ✓ |
-| **Raven gunshot sensors** | BLE service UUID set (0x180A/0x3100-0x3500) | None | ✓ |
-| **Amazon Ring/Blink cameras** | WiFi OUI matching | None | ✓ |
-| **Google Nest cameras** | WiFi OUI matching | None | ✓ |
-| **Arlo cameras** | WiFi OUI matching | None | ✓ |
-| **Wyze cameras** | WiFi OUI matching | None | ✓ |
-| **GPS tagging** | NEO-6M UART NMEA parsing | NEO-6M ($5) | ✓ |
+OLED I2C driver, SSD1306 init sequence, framebuffer transmit.
+Device boots and displays text on the physical OLED.
 
-## System Features
+## Phase 1: BLE Scanning ✓
 
-| Feature | Details | Status |
-|---------|---------|--------|
-| **OLED display** | 128x64 SSD1306, 7-page UI, 5x7 font | ✓ |
-| **Confidence scoring** | Multi-method corroboration, 0-100 score, alert escalation | ✓ |
-| **Battery monitor** | GPIO 1 ADC, 390k/100k divider, voltage bar | ✓ |
-| **SPIFFS logging** | CSV detection log at /spiffs/detections.csv, session persistence | ✓ |
-| **LoRa mesh** | SX1262 915 MHz, broadcast detection packets (needs 2nd unit) | ✓ |
-| **LED alerts** | Blink patterns by confidence: 1=MED, 3=HIGH, 5=CERTAIN | ✓ |
-| **Serial CSV export** | Long-press PRG button → CSV dump over USB | ✓ |
+NimBLE passive scanning, Apple Find My / Tile / Samsung SmartTag detection.
+Tracker table with fixed allocation. Buzzer alerts on new detection.
 
-## UI Pages (7 total, button-cycled)
+## Phase 2: WiFi Promiscuous Mode ✓
 
-| Page | Title | Content |
-|------|-------|---------|
-| 1/7 | **Summary** | ALPR/DRN/BLE/RAV counts, battery bar, OUI db size, GPS status |
-| 2/7 | **Threats** | Recent tracker list: MAC, type, RSSI, score level badge |
-| 3/7 | **Proximity** | Nearest threat: RSSI gauge, type, score, GPS coordinates |
-| 4/7 | **History** | 5-bar chart: detections over last 60 minutes |
-| 5/7 | **BLE** | BLE-only tracker list (AirTag, Tile, Samsung, drone) |
-| 6/7 | **Stats** | Uptime, unique detections, WiFi frames, battery voltage |
-| 7/7 | **System** | Firmware version, flash size, GPS fix status, battery |
+802.11 frame parsing, OUI matching, SSID extraction, probe request IE walking.
+Flock Safety ALPR camera detection. Flock-XXXX format validation.
+Remote ID tag 221 parsing for drone detection.
 
-## OUI Database
+## Phase 3: Multi-Page Display ✓
 
-50 MAC OUI prefixes baked in at compile time:
-- 33 Flock Safety ALPR camera prefixes
-- 8 drone manufacturer prefixes (DJI, Autel, Skydio, Parrot, Yuneec)
-- 9 surveillance camera prefixes (Ring/Blink, Nest, Arlo, Wyze)
+7 OLED pages with 500ms live refresh:
+- Summary (SURV/TRACK counters)
+- Surveillance (ALPR/drone/raven/camera filtered)
+- Proximity (RSSI readout + trend arrow + distance word)
+- History (5-bar chart, 12-min buckets)
+- Trackers (AirTag/Tile/Samsung list)
+- Stats (uptime, totals)
+- System (heap, flash, battery)
 
-Edit `src/ouis.txt` and rebuild to add more — no code changes needed.
+## Phase 4: Confidence Scoring ✓
 
-## Source Structure
+Multi-method corroboration, RSSI bonus, randomized MAC penalty, static MAC bonus.
+Confidence thresholds: MED 40, HIGH 70, CERT 85. Alert escalation by score.
 
+Score weight table:
 ```
-src/
-├── main.zig         (581 lines) — entry point, main loop, extern fns, OUI db
-├── display.zig      (581 lines) — SSD1306 driver, 7-page UI, LED alerts
-├── scanner.zig      (392 lines) — detection classifiers, scoring, NMEA parser, logging
-├── mesh.zig         ( 72 lines) — LoRa mesh packet send/receive
-├── ouis.txt         ( 50 lines) — MAC OUI database
-└── build.zig        ( 53 lines) — reference build script (not used)
+MAC OUI:          40 pts    SSID Flock-XXXX:  65 pts
+SSID prefix:      50 pts    BLE name:         45 pts
+Manufacturer ID:  60 pts    Find My:          70 pts
+Raven UUID:       70 pts    Tile UUID:        45 pts
+Drone BLE:        60 pts    WiFi Drone:       85 pts
+Sidewalk:         50 pts    Cam SSID:         30 pts
+Multi-method:    +20 pts    Strong RSSI:     +10 pts
+Static MAC:      +10 pts    Random MAC:      -20 pts
+RSSI trend:      +10 pts
 ```
 
-## Binary Size History
+## Phase 5: Persistence ✓
 
-| Phase | Binary | Features added |
-|-------|--------|---------------|
-| P0 | 245 KB | OLED driver |
-| P1 | 550 KB | BLE scanning (NimBLE) |
-| P2 | 948 KB | WiFi promiscuous |
-| P3 | 967 KB | 7-page display + battery (3MB partition) |
-| P4 | ~985 KB | Confidence scoring |
-| P5 | 997 KB | SPIFFS persistence |
-| P6 | 1021 KB | LoRa SX1262 driver |
-| P7 | 1035 KB | GPS NMEA parser |
-| P8 | 1038 KB | Drone Remote ID |
-| P9 | 1041 KB | Raven gunshot detection |
-| **Final** | **1041 KB** | **67% free on 3MB** |
+SPIFFS CSV logging (detections.csv), session counters survive reboot.
+CSV export via long-press button over serial.
 
-## Known Limitations
+## Phase 6: LoRa Mesh ✓
 
-1. **LoRa mesh needs a second Heltec V3** for end-to-end test. SX1262 driver initializes but TX/RX not verified solo.
-2. **No buzzer** — LED blink patterns provide visual alerts instead.
-3. **GPS needs NEO-6M module connected** — shows "NOFIX" without hardware.
-4. **Battery reading** uses deprecated ADC API — migrate to `esp_adc/adc_oneshot.h` in future ESP-IDF version.
-5. **No WiFi/Bluetooth coexistence tuning** — both radios active simultaneously, no power-saving.
-6. **sdkconfig must be manually patched after `set-target`** — Kconfig choice resolution prevents `CONFIG_BT_NIMBLE_ENABLED` from being set via `sdkconfig.defaults`. Run `python3 tools/patch-sdkconfig.py`.
+SX1262 driver (full opcode set, SPI, BUSY polling, calibration).
+meshSend() on high-confidence detection, meshRecv() with CRC validation.
+14-byte packet format. Base station + mobile unit architecture supported.
 
-## Future Ideas
+## Phase 7: GPS ✓
 
-- **Multi-unit mesh triangulation** — two or more units share GPS-tagged detections for ALPR camera geolocation
-- **GPX/KML export** — dump GPS-tracked detections as importable map files
-- **Web dashboard** — ESP32-S3 WiFi AP mode serving a live threat map
-- **BLE long-range (Coded PHY)** — extended range scanning for distant trackers
-- **Audio spectrum analysis** — I2S microphone for gunshot acoustic detection (complement Raven BLE)
-- **OLED sleep mode** — dim/bright cycle for extended battery life
-- **OTA firmware updates** — over-the-air flashing via WiFi
+NEO-6M UART driver, NMEA $GPGGA + $GPRMC parsing.
+GPS coordinates logged with detections. GPS status on summary page.
+
+## Phase 8: Drone Remote ID ✓
+
+ASTM F3411 WiFi tag 221 + BLE UUID 0xFFFA. Drone OUIs in database.
+Message type parsing (Basic ID, Location, Self-ID).
+
+## Phase 9: Raven Gunshot Detection ✓
+
+8 BLE service UUIDs, firmware version classification, hardware verified.
+
+---
+
+## Remaining Work
+
+### Short term
+
+- [ ] Drone model text display — Self-ID text captured but discarded
+- [ ] Real-world scoring weight tuning — field data needed
+- [ ] OUI database maintenance — add as new prefixes are discovered
+- [ ] Raven threshold tuning — single 0x180A too broad
+
+### Medium term
+
+- [ ] Stingray burst detector implementation (see STINGRAY.md)
+- [ ] WiFi channel coverage 1-13 with adaptive dwell
+- [ ] Stealth mode (double-press toggle, OLED off, silent scanning)
+- [ ] UX enhancements (threat-level LED patterns, boot sequence, sleep/wake)
+- [ ] Geiger mode on proximity page (audio clicks proportional to RSSI)
+
+### Long term
+
+- [ ] Web dashboard (see LAYERS_1_2.md)
+- [ ] Onboarding / captive portal for first boot
+- [ ] OTA firmware updates via GitHub Releases
+- [ ] Community OUI database with PR-based contributions
+- [ ] Web flasher (esptool-js) for no-toolchain flashing
+- [ ] 3D-printable enclosure

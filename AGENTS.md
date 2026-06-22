@@ -3,190 +3,161 @@
 ## Project
 
 Passive BLE/WiFi surveillance detection for Heltec WiFi LoRa 32 V3 (ESP32-S3).
-Zig application logic compiled to static library, linked into ESP-IDF project.
-Zero external parts for basic operation. AGPLv3.
+Zig + ESP-IDF. Zero external parts for basic operation. AGPLv3.
+
+**Status:** Detection engine feature-complete. Raven, ALPR, drone Remote ID,
+consumer cameras, Amazon Sidewalk, and tracker classification all working.
+Hardware-tested. UX refinements active. Web dashboard pending.
 
 ## Build
 
 ```bash
 cd ~/argus-zig
-./build-zig.sh                    # Zig → zig-out/libargus.a  (2s)
+./build-zig.sh                    # Zig → zig-out/libargus.a
 source ~/esp/esp-idf/export.sh    # ESP-IDF env
-idf.py set-target esp32s3         # Once — generates sdkconfig
-python3 tools/patch-sdkconfig.py  # Inject NimBLE configs (Kconfig choice workaround)
-idf.py build                      # ESP-IDF → build/argus-zig.bin  (5s cached)
-idf.py -p /dev/ttyUSB0 flash monitor  # Flash and monitor
+idf.py build                      # ESP-IDF → build/argus-zig.bin
+idf.py -p /dev/ttyUSB0 flash monitor
 ```
 
-The build is two-stage by design:
-1. `build-zig.sh` compiles Zig to a static library using the Espressif fork
-2. `idf.py build` compiles ESP-IDF components and links the Zig library
-
-**Never** skip step 1 before step 2 — idf.py does not trigger the Zig build.
-
-**sdkconfig note:** `CONFIG_BT_NIMBLE_ENABLED` cannot be set via `sdkconfig.defaults` due to
-ESP-IDF v5.4 Kconfig choice dependency resolution. `tools/patch-sdkconfig.py` injects
-the required BT/NimBLE configs directly. Run it after `idf.py set-target` and whenever
-sdkconfig is regenerated.
+Two-stage: Zig compiles to static library, idf.py links it with ESP-IDF components.
+Always run build-zig.sh first.
 
 ## Toolchain
 
-- **Zig fork**: `~/zig-xtensa/zig` (zig-espressif-bootstrap 0.16.0-xtensa)
-- **ESP-IDF**: `~/esp/esp-idf` (v5.4)
-- **Zig env var**: `ZIG=~/zig-xtensa/zig` in build-zig.sh
-- **IDF env**: `source ~/esp/esp-idf/export.sh` before idf.py
-
-The upstream Zig at `~/.local/bin/zig` (0.16.0) does NOT have Xtensa support.
-Always use the fork.
+- **Zig fork:** `~/zig-xtensa/zig` (zig-espressif-bootstrap 0.16.0-xtensa)
+- **ESP-IDF:** `~/esp/esp-idf` (v5.4)
+- Upstream Zig at `~/.local/bin/zig` does NOT have Xtensa. Use the fork.
 
 ## Architecture
 
 ```
-main/main.c (C)           ← ESP-IDF app_main entry point
-    │                        NVS init, BLE/WiFi/LoRa/GPS/SPIFFS init, then zig_main()
-    │
-    ├── main/ble.c         ← NimBLE passive scanning, ring buffer
-    ├── main/wifi.c        ← WiFi promiscuous sniffer, ring buffer
-    ├── main/lora.c        ← SX1262 LoRa driver (SPI)
-    ├── main/spiffs.c      ← SPIFFS mount, CSV append/export
-    ├── main/gps.c         ← NEO-6M UART driver
-    │
-    ▼
-src/main.zig (Zig)        ← Entry point + main loop, extern fns, OUI db (581 lines)
-    │                        Imports display.zig, scanner.zig, mesh.zig
-    │
-    ├── KNOWN_OUIS         ← @embedFile("ouis.txt") + comptime parsing
-    │   [64][3]u8 array, KNOWN_OUIS_COUNT for actual count
-    │
-    ├── Tracker table      ← Fixed [MAX_TRACKERS] array, no heap
-    │
-    ├── src/display.zig    ← SSD1306 driver, 5x7 font, 7-page UI, LED alerts (581 lines)
-    ├── src/scanner.zig    ← Detection classifiers, scoring, NMEA parser, logging (392 lines)
-    └── src/mesh.zig       ← LoRa mesh packet send/receive (72 lines)
+main/main.c              ← app_main: NVS init, starts BLE/WiFi/LoRa/GPS/SPIFFS
+main/ble.c               ← NimBLE passive scanning + ring buffer
+main/wifi.c              ← WiFi promiscuous sniffer (802.11 parsing, Remote ID IE)
+main/lora.c              ← SX1262 LoRa driver (SPI, full opcode set)
+main/spiffs.c            ← SPIFFS mount, CSV append/export
+main/gps.c               ← NEO-6M UART driver
+main/main.c (oled/gpio)  ← I2C OLED driver + GPIO wrappers + battery ADC
+
+src/main.zig     590L    ← Entry point, main loop, extern fns, OUI db, tracker table
+src/scanner.zig  600L+   ← BLE/WiFi classifiers, scoring, NMEA parser, CSV logging,
+                           BLE_SIGNATURES table, carrier probe counter, Stingray burst detector
+src/display.zig  720L+   ← SSD1306 driver, 5x7 font, 7-page UI, LED alerts
+src/mesh.zig      72L    ← LoRa mesh packet send/receive, CRC
+
+src/ouis.txt      96L    ← 73 MAC OUI prefixes (@embedFile + comptime parsed)
 ```
 
 ## Key design decisions
 
-**Why extern fn instead of @cImport:**
-ESP-IDF v5.4 headers are deeply nested. @cImport pulls in 50+ transitive includes
-(freertos/FreeRTOS.h → FreeRTOSConfig.h → sdkconfig.h → assert.h → ...).
-Each one breaks on a different missing path. extern fn avoids this entirely —
-declare only the functions you use, linker resolves them.
+**extern fn instead of @cImport** — ESP-IDF v5.4 headers are deeply nested and
+break on transitive includes. Declare only the functions used; linker resolves them.
 
-**Why ReleaseSafe not ReleaseSmall:**
-ReleaseSmall inlines functions but leaves dangling symbol references in the .a
-file that GNU ld cannot resolve (e.g., `U main.ledOn` in nm output).
-ReleaseSafe keeps function boundaries intact. Cost: ~20KB larger.
+**ReleaseSafe not ReleaseSmall** — ReleaseSmall produces dangling symbol refs
+GNU ld can't resolve. ReleaseSafe is ~20KB larger but links correctly.
 
-**Why pure-Zig SSD1306 instead of U8g2:**
-U8g2 is 500KB compiled. The pure-Zig driver is ~2KB. We only need 5x7 text
-on a 128x64 monochrome display — U8g2 is massive overkill.
+**Pure-Zig SSD1306** — ~2KB vs 500KB for U8g2. Only need 5x7 text on 128x64.
 
-**Why comptime OUI parsing:**
-@embedFile + comptime loop bakes the OUI database into the binary at compile
-time. No SPIFFS access, no runtime parsing, no malloc. Editing ouis.txt and
-rebuilding is sufficient — no code generation step needed.
+**comptime OUI parsing** — @embedFile + comptime loop. No SPIFFS, no runtime parse.
+Edit ouis.txt, rebuild, done.
+
+**Fixed tracker table** — [MAX_TRACKERS] static array. No heap, no fragmentation.
+
+**C modules for hardware, Zig for logic** — C handles NimBLE, WiFi stack, LoRa SPI,
+I2C, SPIFFS, GPS UART, ADC. Zig handles classification, scoring, display, mesh,
+CSV logging, UX. extern fn boundary is the API.
+
+## OLED page map
+
+0. Summary — SURV count, TRACK count, OUI db size, battery, GPS status, Stingray alert
+1. Surveillance — ALPR, drone, raven, camera rows with MAC/RSSI/score
+2. Proximity — big RSSI readout, trend arrow, distance word, bar. 500ms live refresh
+3. History — 5-bar chart, 12-min buckets, rightmost=recent
+4. Trackers — AirTag, Tile, Samsung, FindMy rows with MAC/RSSI
+5. Stats — session uptime, detection totals
+6. System — heap, flash, battery V, tracker table usage
+
+Stingray alert overlays on summary page and appears as a row on page 1 when active.
+
+## Button
+
+| Gesture | Action |
+|---------|--------|
+| Short press | Next page |
+| Hold 1-2s | CSV dump over serial |
+| Hold 5s+ | Factory reset (clear SPIFFS + reboot) |
 
 ## Pin map (Heltec V3)
 
-| GPIO | Function | Notes |
-|------|----------|-------|
-| 35 | LED | Onboard white, active HIGH |
-| 3 | Buzzer | Piezo, J3 pin 14 |
-| 0 | Button | PRG, active LOW, pullup needed |
-| 17 | OLED SDA | Internal I2C, not on headers |
-| 18 | OLED SCL | Internal I2C, not on headers |
-| 21 | OLED RST | J2 pin 16 |
-| 1 | Battery ADC | 390k/100k divider |
-| 36 | Vext control | Active LOW, P-channel MOSFET |
+GPIO 35: LED (onboard white, active HIGH)
+GPIO 3:  Buzzer (piezo, J3 pin 14)
+GPIO 0:  Button (PRG, active LOW, pullup)
+GPIO 17: OLED SDA (I2C, internal)
+GPIO 18: OLED SCL (I2C, internal)
+GPIO 21: OLED RST (J2 pin 16)
+GPIO 1:  Battery ADC (390k/100k divider)
+GPIO 36: Vext control (active LOW)
 
-**Free for future:** GPIO 2,4,5,6,7 (J3), GPIO 47,48 (J2)
-**Do not use:** GPIO 33,34,37,38 (SPI flash), 26 (SubSPI), 45,46 (strapping),
-  8-14 (LoRa SX1262), 43,44 (UART0)
+Free: GPIO 2,4,5,6,7 (J3), GPIO 47,48 (J2)
+Reserved: GPIO 33,34,37,38 (SPI flash), 26 (SubSPI), 45,46 (strapping),
+          8-14 (LoRa SX1262), 43,44 (UART0)
 
 ## Zig 0.16 quirks
 
-- `callconv(.c)` not `.C` — lowercase in 0.16
-- `@as(u3, @truncate(x))` required for shift amounts — u8 no longer coerces
+- `callconv(.c)` not `.C`
+- `@as(u3, @truncate(x))` for shift amounts
 - `asm volatile ("")` not `asm volatile ("" ::: "memory")`
-- `std.fmt.bufPrint` replaces `bufPrintIntToSlice`
-- `b.createModule` + `b.addLibrary` (not `addStaticLibrary`)
-- `b.graph.environ_map.get("KEY")` for env vars in build.zig
-- Comptime blocks cannot return slices to comptime memory in globals —
-  use fixed-size arrays with sentinel values and separate count constant
+- `std.fmt.bufPrint` not `bufPrintIntToSlice`
+- `b.createModule` + `b.addLibrary` in build.zig
+- `b.graph.environ_map.get("KEY")` for env vars
+- Comptime blocks: use fixed arrays + sentinel values + separate count const
 
 ## What to do
 
-- Add features in `src/` — logic lives across `main.zig`, `display.zig`, `scanner.zig`, `mesh.zig`
-- Add C functions as `pub extern fn` declarations in `src/main.zig`
-- Add OUI entries to `src/ouis.txt` — format: `XX:XX:XX` one per line
+- Add features in `src/` — logic lives across main/display/scanner/mesh
+- Add C functions as `pub extern fn` in `src/main.zig`
+- Add OUIs to `src/ouis.txt` — one `XX:XX:XX` per line
+- Add BLE signatures to `BLE_SIGNATURES` table in `src/scanner.zig` line ~80
 - After Zig changes: `./build-zig.sh && idf.py build`
-- After sdkconfig changes: `idf.py set-target esp32s3` then `idf.py build`
 
 ## What NOT to do
 
-- Do NOT use @cImport for ESP-IDF headers (will break on transitive includes)
-- Do NOT use ReleaseSmall optimization (breaks GNU ld linking)
-- Do NOT add malloc/free in Zig (use FixedBufferAllocator or static arrays)
-- Do NOT change pin definitions without updating the pin map doc in main.zig
-- Do NOT add dependencies to main/CMakeLists.txt REQUIRES without testing
-- Do NOT run idf.py before build-zig.sh (linker will fail on missing libargus.a)
-- Do NOT use upstream Zig (no Xtensa target)
-- Do NOT delete zig-cache/ during a build (breaks incremental compilation)
+- Do NOT use @cImport for ESP-IDF headers
+- Do NOT use ReleaseSmall (GNU ld symbol issues)
+- Do NOT malloc/free in Zig (static arrays or FixedBufferAllocator)
+- Do NOT change pins without updating this file
+- Do NOT run idf.py before build-zig.sh
+- Do NOT use upstream Zig (no Xtensa)
 
 ## Known issues
 
-1. **I2C/OLED not yet connected.** oledUpdate() is a placeholder. The display
-   buffer is drawn in memory but not sent to the physical SSD1306. To complete:
-   add extern fn for i2c_master_write(), send SSD1306 init sequence, then
-   send oled_buf in 8 pages.
+1. **Buzzer blocks during tone.** Fine for chirps <200ms. For longer tones,
+   switch to LEDC PWM.
 
-2. **Buzzer uses blocking busy-wait.** Fine for 50-200ms alert chirps.
-   For longer tones, switch to ESP-IDF LEDC PWM. Add `extern fn` for
-   ledc_timer_config and ledc_set_duty.
+2. **BLE scan and WiFi promiscuous share the radio.** ESP32 coexistence
+   handles this but scan intervals may shift under heavy WiFi traffic.
 
-3. **No BLE/WiFi scanning yet.** NimBLE extern fns and WiFi promiscuous
-   callback are the next features to add. The architecture supports them —
-   add extern fns, create FreeRTOS tasks (from C side or Zig extern),
-   push detections into the tracker table.
+3. **No web dashboard yet.** Base station mode planned (see LAYERS_1_2.md).
+   Currently USB serial export only.
 
-4. **LoRa not used.** The SX1262 is idle. Future: LoRa mesh for multi-unit
-   coordination. Pins 8-14 are reserved but not configured.
+4. **Stingray detection is probabilistic.** Indirect detection via carrier
+   probe burst analysis. Cannot confirm — only flag as STINGRAY? with caveat.
 
-5. **No GPS.** NEO-6M can be added via Vext (GPIO 36) and UART. Add extern fn
-   for uart driver, parse NMEA sentences in Zig.
+5. **256-byte I2C buffer limit.** SSD1306 framebuffer is 1024 bytes sent in
+   four 256-byte chunks. ESP-IDF I2C driver has a 256-byte hardware limit.
 
-## File listing
+## Documentation
 
 ```
-argus-zig/
-├── AGENTS.md              ← this file
-├── ROADMAP.md             ← feature status and completed phases
-├── README.md              ← public project overview
-├── BUILD.md               ← toolchain setup and build instructions
-├── CMakeLists.txt          ← ESP-IDF project root
-├── build-zig.sh            ← Zig build script
-├── partitions.csv          ← 8MB flash, 3MB factory + 1MB SPIFFS
-├── sdkconfig.defaults      ← BT/NimBLE/flash config overrides
-├── main/
-│   ├── CMakeLists.txt       ← ESP-IDF component
-│   ├── main.c               ← C entry point (NVS init → zig_main)
-│   ├── ble.c                ← NimBLE scanning + ring buffer
-│   ├── wifi.c               ← WiFi promiscuous sniffer + ring buffer
-│   ├── lora.c               ← SX1262 LoRa driver
-│   ├── spiffs.c             ← SPIFFS mount, CSV export, file I/O
-│   └── gps.c                ← NEO-6M UART driver
-├── src/
-│   ├── main.zig             ← Entry point, main loop, extern fns, OUI db (581 lines)
-│   ├── display.zig          ← SSD1306 driver, 7-page UI, LED alerts (581 lines)
-│   ├── scanner.zig          ← Classifiers, scoring, NMEA parser, logging (392 lines)
-│   ├── mesh.zig             ← LoRa mesh packets (72 lines)
-│   ├── ouis.txt             ← 50 MAC OUI prefixes
-│   └── build.zig            ← Alternative zig build (reference only)
-├── tools/
-│   ├── patch-sdkconfig.py   ← BT/NimBLE/flash Kconfig injector
-│   └── nimble_ref_sdkconfig.txt
-├── zig-out/
-│   └── libargus.a           ← Built static library
-└── build/                   ← ESP-IDF build artifacts (gitignored)
+AGENTS.md          ← this file
+README.md          ← public project overview
+BUILD.md           ← toolchain setup + build instructions
+RESOURCES.md       ← learning resources for contributors
+ROADMAP.md         ← development phases and status (partially out of date)
+DETECTION.md       ← detection expansion plan (research + implementation)
+DETECTION_STATUS.md ← what's implemented vs pending from DETECTION.md
+FIXES.md           ← walk test issues found June 21 + fixes
+HARDWARE_TEST.md   ← hardware test results June 21
+STINGRAY.md        ← Stingray/IMSI catcher detection plan
+LAYERS_1_2.md      ← onboarding + web dashboard implementation plan
 ```
