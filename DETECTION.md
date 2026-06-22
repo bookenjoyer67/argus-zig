@@ -399,8 +399,9 @@ with appropriate caveats.
 - It appears frequently enough to deserve its own display line
 - The user would want to filter on it separately
 
-Current threat classes: `ALPR`, `GUNSHOT`, `DRONE`, `TRACKER`, `CAMERA`.
-Add a class when you have at least 3 distinct OUI/signature entries and
+Current tracker types: `.flock_camera`, `.wifi_device`, `.drone`, `.raven`, `.camera`,
+`.airtag`, `.tile`, `.samsung`, `.findmy`, `.unknown`.
+Add a tracker type when you have at least 3 distinct OUI/signature entries and
 the class is surveillance-relevant (not just any consumer device).
 
 ---
