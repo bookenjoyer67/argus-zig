@@ -42,23 +42,27 @@ Always use the fork.
 ## Architecture
 
 ```
-main/main.c (C)          ← ESP-IDF app_main entry point
-    │                       NVS init, then calls zig_main()
+main/main.c (C)           ← ESP-IDF app_main entry point
+    │                        NVS init, BLE/WiFi/LoRa/GPS/SPIFFS init, then zig_main()
+    │
+    ├── main/ble.c         ← NimBLE passive scanning, ring buffer
+    ├── main/wifi.c        ← WiFi promiscuous sniffer, ring buffer
+    ├── main/lora.c        ← SX1262 LoRa driver (SPI)
+    ├── main/spiffs.c      ← SPIFFS mount, CSV append/export
+    ├── main/gps.c         ← NEO-6M UART driver
+    │
     ▼
-src/main.zig (Zig)       ← All application logic
-    │                       GPIO, buzzer, display, OUI matching, tracker table
+src/main.zig (Zig)        ← Entry point + main loop, extern fns, OUI db (581 lines)
+    │                        Imports display.zig, scanner.zig, mesh.zig
     │
-    ├── extern fn         ← C functions resolved by GNU ld at link time
-    │   gpio_set_direction, gpio_set_level, vTaskDelay, etc.
-    │   No @cImport — avoids ESP-IDF header translation problems.
-    │
-    ├── KNOWN_OUIS        ← @embedFile("ouis.txt") + comptime parsing
+    ├── KNOWN_OUIS         ← @embedFile("ouis.txt") + comptime parsing
     │   [64][3]u8 array, KNOWN_OUIS_COUNT for actual count
     │
-    ├── Tracker table     ← Fixed [MAX_TRACKERS] array, no heap
+    ├── Tracker table      ← Fixed [MAX_TRACKERS] array, no heap
     │
-    └── SSD1306 driver    ← Pure Zig, 200 lines, saves 500KB vs U8g2
-        Framebuffer: 1024 bytes. I2C driver pending.
+    ├── src/display.zig    ← SSD1306 driver, 5x7 font, 7-page UI, LED alerts (581 lines)
+    ├── src/scanner.zig    ← Detection classifiers, scoring, NMEA parser, logging (392 lines)
+    └── src/mesh.zig       ← LoRa mesh packet send/receive (72 lines)
 ```
 
 ## Key design decisions
@@ -113,8 +117,8 @@ rebuilding is sufficient — no code generation step needed.
 
 ## What to do
 
-- Add features in `src/main.zig` — all application logic lives here
-- Add C functions as `extern fn` declarations at the top
+- Add features in `src/` — logic lives across `main.zig`, `display.zig`, `scanner.zig`, `mesh.zig`
+- Add C functions as `pub extern fn` declarations in `src/main.zig`
 - Add OUI entries to `src/ouis.txt` — format: `XX:XX:XX` one per line
 - After Zig changes: `./build-zig.sh && idf.py build`
 - After sdkconfig changes: `idf.py set-target esp32s3` then `idf.py build`
@@ -157,18 +161,32 @@ rebuilding is sufficient — no code generation step needed.
 ```
 argus-zig/
 ├── AGENTS.md              ← this file
-├── README.md              Public project overview
-├── BUILD.md               Toolchain setup and build instructions
-├── CMakeLists.txt          ESP-IDF project root (commented)
-├── build-zig.sh            Zig build script (commented)
+├── ROADMAP.md             ← feature status and completed phases
+├── README.md              ← public project overview
+├── BUILD.md               ← toolchain setup and build instructions
+├── CMakeLists.txt          ← ESP-IDF project root
+├── build-zig.sh            ← Zig build script
+├── partitions.csv          ← 8MB flash, 3MB factory + 1MB SPIFFS
+├── sdkconfig.defaults      ← BT/NimBLE/flash config overrides
 ├── main/
-│   ├── CMakeLists.txt       ESP-IDF component (commented)
-│   └── main.c               C entry point (commented)
+│   ├── CMakeLists.txt       ← ESP-IDF component
+│   ├── main.c               ← C entry point (NVS init → zig_main)
+│   ├── ble.c                ← NimBLE scanning + ring buffer
+│   ├── wifi.c               ← WiFi promiscuous sniffer + ring buffer
+│   ├── lora.c               ← SX1262 LoRa driver
+│   ├── spiffs.c             ← SPIFFS mount, CSV export, file I/O
+│   └── gps.c                ← NEO-6M UART driver
 ├── src/
-│   ├── main.zig             All application logic (heavily commented)
-│   ├── ouis.txt             MAC OUI database (31 Flock Safety prefixes)
-│   └── build.zig            Alternative zig build (reference only)
+│   ├── main.zig             ← Entry point, main loop, extern fns, OUI db (581 lines)
+│   ├── display.zig          ← SSD1306 driver, 7-page UI, LED alerts (581 lines)
+│   ├── scanner.zig          ← Classifiers, scoring, NMEA parser, logging (392 lines)
+│   ├── mesh.zig             ← LoRa mesh packets (72 lines)
+│   ├── ouis.txt             ← 50 MAC OUI prefixes
+│   └── build.zig            ← Alternative zig build (reference only)
+├── tools/
+│   ├── patch-sdkconfig.py   ← BT/NimBLE/flash Kconfig injector
+│   └── nimble_ref_sdkconfig.txt
 ├── zig-out/
-│   └── libargus.a           Built static library (77 KB)
-└── build/                   ESP-IDF build artifacts (gitignored)
+│   └── libargus.a           ← Built static library
+└── build/                   ← ESP-IDF build artifacts (gitignored)
 ```

@@ -33,7 +33,7 @@
 //! ## Pin Map (Heltec WiFi LoRa 32 V3 — top view, USB-C down)
 //!
 //!   GPIO 35 (J2-10):  Onboard white LED, active HIGH
-//!   GPIO 3  (J3-14):  Piezo buzzer
+//!   GPIO 3  (J3-14):  (free — was piezo buzzer)
 //!   GPIO 0  (J2-8):   PRG button, active LOW, internal pullup
 //!   GPIO 17 (internal): OLED SDA (I2C)
 //!   GPIO 18 (internal): OLED SCL (I2C)
@@ -47,6 +47,12 @@
 //!   GPIO 43,44 (UART0 to CP2102)
 
 const std = @import("std");
+pub const display = @import("display.zig");
+pub const scanner = @import("scanner.zig");
+pub const mesh = @import("mesh.zig");
+
+// Re-export for modules that need them
+pub const TrackerType = display.TrackerType;
 
 // ================================================================
 // ESP-IDF C FUNCTION DECLARATIONS
@@ -63,55 +69,67 @@ const std = @import("std");
 /// mode: 0=INPUT, 1=OUTPUT.  pull: 0=NONE, 1=UP, 2=DOWN.
 /// Wraps ESP-IDF gpio_config() — a real ABI symbol, unlike gpio_set_pull_mode
 /// which is inlined in v5.4 headers and resolves to garbage at link time.
-extern fn gpio_pin_init(pin: u32, mode: u32, pull: u32) i32;
+pub extern fn gpio_pin_init(pin: u32, mode: u32, pull: u32) i32;
 
 /// Set GPIO output level: 0 = LOW, 1 = HIGH
-extern fn gpio_write(pin: u32, level: u32) i32;
+pub extern fn gpio_write(pin: u32, level: u32) i32;
 
 /// Read GPIO input level. Returns 0 (LOW) or 1 (HIGH).
-extern fn gpio_read(pin: u32) i32;
+pub extern fn gpio_read(pin: u32) i32;
 
 /// FreeRTOS delay: blocks calling task for (ticks * portTICK_PERIOD_MS) milliseconds
-extern fn vTaskDelay(ticks: u32) void;
+pub extern fn vTaskDelay(ticks: u32) void;
 
 // GPIO mode/pull constants for gpio_pin_init()
-const GPIO_INPUT: u32  = 0;
-const GPIO_OUTPUT: u32 = 1;
-const GPIO_PULL_NONE: u32 = 0;
-const GPIO_PULL_UP: u32   = 1;
-const GPIO_PULL_DOWN: u32 = 2;
+pub const GPIO_INPUT: u32  = 0;
+pub const GPIO_OUTPUT: u32 = 1;
+pub const GPIO_PULL_NONE: u32 = 0;
+pub const GPIO_PULL_UP: u32   = 1;
+pub const GPIO_PULL_DOWN: u32 = 2;
 
 // FreeRTOS tick period: 10ms on ESP-IDF default config
-const portTICK_PERIOD_MS: u32 = 10;
+pub const portTICK_PERIOD_MS: u32 = 10;
 
 // OLED I2C helpers — thin C wrappers in main/main.c
 // oled_i2c_init configures I2C port 0 on GPIO 17/18 at 400kHz.
 // oled_i2c_write prepends a control byte (0x00=cmd, 0x40=data) and transmits.
 // Both return 0 on success, negative on error.
-extern fn oled_i2c_init() i32;
-extern fn oled_i2c_write(control_byte: u8, data: [*]const u8, len: u32) i32;
+pub extern fn oled_i2c_init() i32;
+pub extern fn oled_i2c_write(control_byte: u8, data: [*]const u8, len: u32) i32;
 
 // BLE scanner — NimBLE runs in its own FreeRTOS task, pushing results
 // to a lock-free ring buffer. ble_scan_poll drains one result.
 // Returns 1 if data available, 0 if buffer empty.
-extern fn ble_scan_poll(addr_out: [*]u8, rssi_out: *i8, adv_type_out: *u8, data_out: [*]u8, data_len_out: *u8) i32;
+pub extern fn ble_scan_poll(addr_out: [*]u8, rssi_out: *i8, adv_type_out: *u8, data_out: [*]u8, data_len_out: *u8) i32;
 
 // WiFi promiscuous sniffer — callback pushes simplified 802.11 frames
 // to a ring buffer. wifi_scan_poll drains one result.
 // Returns 1 if data available, 0 if buffer empty.
-extern fn wifi_scan_poll(addr_out: [*]u8, receiver_out: [*]u8, rssi_out: *i8, channel_out: *u8, frame_type_out: *u8, ssid_out: [*]u8, ssid_len_out: *u8) i32;
+pub extern fn wifi_scan_poll(addr_out: [*]u8, receiver_out: [*]u8, rssi_out: *i8, channel_out: *u8, frame_type_out: *u8, ssid_out: [*]u8, ssid_len_out: *u8) i32;
 
 // Diagnostic: total WiFi frames captured (to verify sniffer is running)
-extern fn wifi_get_frame_count() u32;
+pub extern fn wifi_get_frame_count() u32;
 
 // Battery ADC — GPIO 1 with 390k/100k divider on Heltec V3.
 // Returns battery voltage in millivolts (e.g. 4100 = 4.1V).
-extern fn battery_read_mv() i32;
+pub extern fn battery_read_mv() i32;
 
 // SPIFFS persistence — CSV detection log on flash storage
-extern fn spiffs_append_line(path: [*:0]const u8, line: [*:0]const u8) i32;
-extern fn spiffs_read_file(path: [*:0]const u8, buf: [*]u8, max_len: u32) i32;
-extern fn spiffs_write_file(path: [*:0]const u8, data: [*]const u8, len: u32) i32;
+pub extern fn spiffs_append_line(path: [*:0]const u8, line: [*:0]const u8) i32;
+pub extern fn spiffs_read_file(path: [*:0]const u8, buf: [*]u8, max_len: u32) i32;
+pub extern fn spiffs_write_file(path: [*:0]const u8, data: [*]const u8, len: u32) i32;
+
+// Dump CSV log to serial (called on long press). Entirely in C — see spiffs.c.
+pub extern fn spiffs_csv_export() void;
+
+// LoRa SX1262 — mesh networking on 915 MHz
+// lora_send: TX a packet (max 255 bytes), blocks until done.
+// lora_poll_receive: check for received packet, returns length (0 if none).
+pub extern fn lora_send(data: [*]const u8, len: u8) i32;
+pub extern fn lora_poll_receive(buf: [*]u8) i32;
+
+// GPS NEO-6M — UART1 on GPIO 4/5 at 9600 baud
+pub extern fn gps_read(buf: [*]u8, max_len: i32) i32;
 
 // ================================================================
 // HELTEC V3 PIN DEFINITIONS
@@ -133,16 +151,15 @@ extern fn spiffs_write_file(path: [*:0]const u8, data: [*]const u8, len: u32) i3
 //   Vext: switched 3.3V for external sensors, controlled by GPIO 36 (active LOW)
 //   Battery ADC on GPIO 1 (390k/100k divider)
 
-const PIN_LED: u32    = 35;  // Onboard white LED (J2 pin 10), active HIGH
-const PIN_BUZZER: u32 = 3;   // Piezo buzzer (J3 pin 14)
-const PIN_BUTTON: u32 = 0;   // PRG button (J2 pin 8), active LOW, needs pullup
+pub const PIN_LED: u32    = 35;  // Onboard white LED (J2 pin 10), active HIGH
+pub const PIN_BUTTON: u32 = 0;   // PRG button (J2 pin 8), active LOW, needs pullup
 
 // OLED I2C bus — these are PCB traces, not exposed on headers
 // The SSD1306 is addressed at 0x3C (SA0 pin tied to GND on this board)
 const PIN_OLED_SDA: u32 = 17;
 const PIN_OLED_SCL: u32 = 18;
-const PIN_OLED_RST: u32 = 21;
-const PIN_VEXT: u32 = 36;  // Vext control: active LOW (P-channel MOSFET)
+pub const PIN_OLED_RST: u32 = 21;
+pub const PIN_VEXT: u32 = 36;  // Vext control: active LOW (P-channel MOSFET)
 
 // ================================================================
 // COMPILE-TIME OUI DATABASE
@@ -175,7 +192,7 @@ const PIN_VEXT: u32 = 36;  // Vext control: active LOW (P-channel MOSFET)
 /// This avoids the comptime-reference-escape problem in Zig 0.16:
 /// comptime blocks can't return slices pointing to comptime memory.
 const OUI_MAX = 64;
-const KNOWN_OUIS_COUNT: usize = blk: {
+pub const KNOWN_OUIS_COUNT: usize = blk: {
     @setEvalBranchQuota(10000);
     const raw = @embedFile("ouis.txt");
     var count: usize = 0;
@@ -188,7 +205,7 @@ const KNOWN_OUIS_COUNT: usize = blk: {
     break :blk count;
 };
 
-const KNOWN_OUIS: [OUI_MAX][3]u8 = blk: {
+pub const KNOWN_OUIS: [OUI_MAX][3]u8 = blk: {
     @setEvalBranchQuota(10000);
     const raw = @embedFile("ouis.txt");
     var list: [OUI_MAX][3]u8 = [_][3]u8{[_]u8{0xFF} ** 3} ** OUI_MAX; // fill with sentinel
@@ -214,7 +231,7 @@ const KNOWN_OUIS: [OUI_MAX][3]u8 = blk: {
 /// Check if a MAC address matches any known surveillance OUI.
 /// Iterates over the database. At 31 entries, the compiler
 /// will likely unroll this into a decision tree.
-fn matchOui(mac: [6]u8) bool {
+pub fn matchOui(mac: [6]u8) bool {
     for (KNOWN_OUIS[0..KNOWN_OUIS_COUNT]) |oui| {
         if (std.mem.eql(u8, &oui, mac[0..3])) return true;
     }
@@ -234,224 +251,20 @@ fn matchOui(mac: [6]u8) bool {
 // When full, the oldest entry is evicted. For a pocket scanner,
 // 64 entries is far more than you'll ever see simultaneously.
 
-const MAX_TRACKERS = 64;
+pub const MAX_TRACKERS = 64;
 
-/// Detection method flags (bitmask) — each method contributes to confidence score.
-const METHOD_OUI: u16         = 1 << 0; // MAC OUI match (40 pts)
-const METHOD_SSID_PREFIX: u16 = 1 << 1; // SSID starts with "Flock" (50 pts)
-const METHOD_SSID_FLOCK: u16  = 1 << 2; // SSID "Flock-XXXX" full format (65 pts)
-const METHOD_BLE_NAME: u16    = 1 << 3; // BLE advert contains device name (45 pts)
-const METHOD_MANUF: u16       = 1 << 4; // Manufacturer 0x09C8 / 0x0075 (60 pts)
-const METHOD_FINDMY: u16      = 1 << 5; // Apple Find My 0x4C00+type 0x12 (70 pts)
-const METHOD_RAVEN: u16       = 1 << 6; // Raven gunshot sensor UUID (70 pts)
-const METHOD_TILE: u16        = 1 << 7; // Tile 0xFEED service UUID (45 pts)
-const METHOD_DRONE: u16       = 1 << 8; // Drone Remote ID (BLE 0xFFFA or OUI) (60 pts)
-
-/// Known tracker types. Stored as u8 in the table.
-const TrackerType = enum(u8) {
-    airtag,
-    tile,
-    samsung,
-    findmy,
-    flock_camera,
-    wifi_device,
-    drone,          // Drone Remote ID (ASTM F3411)
-    raven,          // Raven/ShotSpotter gunshot sensor (BLE UUID set)
-    unknown,
-    _,
-};
-
-const TrackerEntry = struct {
+pub const TrackerEntry = struct {
     mac: [6]u8,
-    kind: TrackerType,
+    kind: display.TrackerType,
     rssi: i8,
     last_seen: u32,
     score: u8,       // 0-100 confidence score
     methods: u16,     // bitmask of detection methods
 };
 
-var trackers: [MAX_TRACKERS]TrackerEntry = undefined;
-var tracker_count: usize = 0;
-var tick_ms: u32 = 0;
-
-/// Classification result from BLE or WiFi scanners.
-const ClassResult = struct {
-    kind: TrackerType,
-    methods: u16,
-};
-
-/// Compute confidence score from method flags, RSSI, and MAC type.
-/// Bonuses: multi-method corroboration, strong signal, static address.
-fn computeScore(methods: u16, rssi: i8, mac: [6]u8) u8 {
-    var score: u32 = 0;
-    var count: u32 = 0;
-
-    if (methods & METHOD_OUI != 0)         { score += 40; count += 1; }
-    if (methods & METHOD_SSID_PREFIX != 0) { score += 50; count += 1; }
-    if (methods & METHOD_SSID_FLOCK != 0)  { score += 65; count += 1; }
-    if (methods & METHOD_BLE_NAME != 0)    { score += 45; count += 1; }
-    if (methods & METHOD_MANUF != 0)       { score += 60; count += 1; }
-    if (methods & METHOD_FINDMY != 0)      { score += 70; count += 1; }
-    if (methods & METHOD_RAVEN != 0)       { score += 70; count += 1; }
-    if (methods & METHOD_TILE != 0)        { score += 45; count += 1; }
-    if (methods & METHOD_DRONE != 0)       { score += 60; count += 1; }
-
-    if (count >= 2) score += 20;     // multi-method corroboration
-    if (rssi > -50) score += 10;     // strong signal
-    if ((mac[0] & 0x03) == 0) score += 10; // static MAC (not multicast, not randomized)
-
-    return if (score > 100) 100 else @intCast(score);
-}
-
-/// Confidence level label for display.
-fn scoreLevel(score: u8) []const u8 {
-    if (score >= 85) return "CERT";
-    if (score >= 70) return "HIGH";
-    if (score >= 40) return "MED ";
-    return "LOW ";
-}
-
-// ================================================================
-// BLE ADVERTISEMENT PARSER
-// ================================================================
-
-/// Parse BLE advertisement data and classify the tracker type + method flags.
-fn classifyBle(adv_data: []const u8) ClassResult {
-    var methods: u16 = 0;
-    var kind: TrackerType = .unknown;
-    var raven_uuids: u8 = 0; // count of Raven UUIDs found
-
-    var pos: usize = 0;
-    while (pos + 1 < adv_data.len) {
-        const len = adv_data[pos];
-        if (len == 0) break;
-        if (pos + 1 + len > adv_data.len) break;
-        const ad_type = adv_data[pos + 1];
-        const payload = adv_data[pos + 2 .. pos + 1 + len];
-
-        if (ad_type == 0xFF and payload.len >= 3) {
-            const company: u16 = @as(u16, payload[0]) | (@as(u16, payload[1]) << 8);
-            if (company == 0x004C and payload.len >= 3 and payload[2] == 0x12) {
-                kind = .airtag;
-                methods |= METHOD_FINDMY;
-            }
-            if (company == 0x0075) {
-                kind = .samsung;
-                methods |= METHOD_MANUF;
-            }
-            if (company == 0x09C8) {
-                methods |= METHOD_MANUF;
-                if (kind == .unknown) kind = .unknown;
-            }
-        }
-
-        if ((ad_type == 0x02 or ad_type == 0x03) and payload.len >= 2) {
-            var u: usize = 0;
-            while (u + 1 < payload.len) : (u += 2) {
-                const uuid: u16 = @as(u16, payload[u]) | (@as(u16, payload[u + 1]) << 8);
-                if (uuid == 0xFEED) {
-                    kind = .tile;
-                    methods |= METHOD_TILE;
-                }
-                if (uuid == 0xFFFA) {
-                    kind = .drone;
-                    methods |= METHOD_DRONE;
-                }
-                // Raven/ShotSpotter gunshot sensor UUIDs
-                if (uuid == 0x180A or uuid == 0x3100 or uuid == 0x3200 or
-                    uuid == 0x3300 or uuid == 0x3400 or uuid == 0x3500) {
-                    raven_uuids += 1;
-                }
-            }
-        }
-
-        if (ad_type == 0x08 or ad_type == 0x09) {
-            // Complete or shortened local name
-            if (payload.len > 0) methods |= METHOD_BLE_NAME;
-        }
-
-        pos += 1 + len;
-    }
-
-    // Raven classification: 1+ service UUIDs = confirmed
-    if (raven_uuids >= 1) {
-        kind = .raven;
-        methods |= METHOD_RAVEN;
-    }
-
-    return .{ .kind = kind, .methods = methods };
-}
-
-/// Classify a WiFi detection based on OUI match and SSID pattern.
-fn classifyWiFi(mac: [6]u8, ssid: []const u8) ClassResult {
-    const oui_match = matchOui(mac);
-    var methods: u16 = 0;
-    var kind: TrackerType = .unknown;
-
-    if (oui_match) methods |= METHOD_OUI;
-
-    if (ssid.len >= 5) {
-        const prefix = [5]u8{ 'F', 'L', 'O', 'C', 'K' };
-        if (std.mem.eql(u8, ssid[0..5], &prefix)) {
-            methods |= METHOD_SSID_PREFIX;
-            // Check full Flock-XXXX format: 10 chars total (Flock-XXXX)
-            if (ssid.len == 10 and ssid[5] == '-') {
-                methods |= METHOD_SSID_FLOCK;
-            }
-        }
-    }
-
-    if (oui_match and (methods & METHOD_SSID_PREFIX != 0)) {
-        kind = .flock_camera;
-    } else if (oui_match) {
-        kind = .wifi_device;
-    }
-
-    return .{ .kind = kind, .methods = methods };
-}
-
-/// Add or update a tracker entry. Accumulates detection methods across
-/// observations, keeps the best RSSI, and recomputes confidence score.
-/// Returns true if this is a new tracker (for alert triggering).
-fn trackDevice(mac: [6]u8, result: ClassResult, rssi: i8) bool {
-    for (0..tracker_count) |i| {
-        if (std.mem.eql(u8, &trackers[i].mac, &mac)) {
-            trackers[i].methods |= result.methods;
-            if (result.kind != .unknown) trackers[i].kind = result.kind;
-            if (rssi > trackers[i].rssi) trackers[i].rssi = rssi;
-            trackers[i].last_seen = tick_ms;
-            trackers[i].score = computeScore(trackers[i].methods, trackers[i].rssi, mac);
-            return false;
-        }
-    }
-
-    // New tracker
-    const score = computeScore(result.methods, rssi, mac);
-    const entry = TrackerEntry{
-        .mac = mac,
-        .kind = result.kind,
-        .rssi = rssi,
-        .last_seen = tick_ms,
-        .score = score,
-        .methods = result.methods,
-    };
-
-    if (tracker_count < MAX_TRACKERS) {
-        trackers[tracker_count] = entry;
-        tracker_count += 1;
-    } else {
-        var oldest_idx: usize = 0;
-        var oldest_time: u32 = trackers[0].last_seen;
-        for (1..MAX_TRACKERS) |i| {
-            if (trackers[i].last_seen < oldest_time) {
-                oldest_time = trackers[i].last_seen;
-                oldest_idx = i;
-            }
-        }
-        trackers[oldest_idx] = entry;
-    }
-    return true;
-}
+pub var trackers: [MAX_TRACKERS]TrackerEntry = undefined;
+pub var tracker_count: usize = 0;
+pub var tick_ms: u32 = 0;
 
 // ================================================================
 // GPIO HELPERS
@@ -460,888 +273,27 @@ fn trackDevice(mac: [6]u8, result: ClassResult, rssi: i8) bool {
 // Tiny wrappers around ESP-IDF GPIO functions.
 // These are deliberately small — the compiler inlines them.
 
-fn ledOn() void {
+pub fn ledOn() void {
     _ = gpio_write(PIN_LED, 1);
 }
 
-fn ledOff() void {
+pub fn ledOff() void {
     _ = gpio_write(PIN_LED, 0);
-}
-
-fn buzzerOn() void {
-    _ = gpio_write(PIN_BUZZER, 1);
-}
-
-fn buzzerOff() void {
-    _ = gpio_write(PIN_BUZZER, 0);
 }
 
 /// Read the PRG button. Returns true when pressed.
 /// Active LOW — GPIO reads 0 when button is held down.
 /// Internal pullup is enabled in zig_main().
-fn buttonPressed() bool {
+pub fn buttonPressed() bool {
     return gpio_read(PIN_BUTTON) == 0;
 }
 
 /// Block for at least `ms` milliseconds using FreeRTOS vTaskDelay.
 /// Also increments our monotonic tick counter.
 /// Note: vTaskDelay resolution is portTICK_PERIOD_MS (10ms).
-/// Delays < 10ms use busy-wait instead (see buzzerTone/busyWaitUs).
-fn delayMs(ms: u32) void {
+pub fn delayMs(ms: u32) void {
     vTaskDelay(ms / portTICK_PERIOD_MS);
     tick_ms +%= ms;
-}
-
-// ================================================================
-// BUZZER TONE GENERATION
-// ================================================================
-//
-// The piezo buzzer is driven by toggling GPIO 3 at the desired frequency.
-// This is a blocking implementation — it busy-waits for the duration.
-//
-// Trade-off: blocking is fine for 50-200ms alert chirps. For longer tones
-// (>500ms), switch to ESP-IDF's LEDC PWM peripheral (to be added).
-//
-// The busy-wait is calibrated for 240 MHz ESP32-S3:
-//   cycles = microseconds * 240
-// Each iteration of the empty asm loop is roughly 1 clock cycle,
-// but pipeline effects and memory latency make this approximate (±20%).
-// For buzzer tones this is precise enough — humans can't hear ±20% at 55ms.
-
-/// Generate a square wave on PIN_BUZZER at freq_hz for dur_ms.
-/// Blocks until complete. For short alert chirps (50-200ms).
-fn buzzerTone(freq_hz: u32, dur_ms: u32) void {
-    if (freq_hz == 0) return;
-    const half_period_us = 1000000 / freq_hz / 2; // microseconds per half-cycle
-    const cycles = freq_hz * dur_ms / 1000;        // total full cycles
-    var i: u32 = 0;
-    while (i < cycles) : (i += 1) {
-        _ = gpio_write(PIN_BUZZER, 1);
-        busyWaitUs(half_period_us);
-        _ = gpio_write(PIN_BUZZER, 0);
-        busyWaitUs(half_period_us);
-    }
-}
-
-/// Rough busy-wait for `us` microseconds on 240MHz ESP32-S3.
-/// The asm volatile ("") prevents the compiler from optimizing the loop away.
-/// Accuracy is ~±20% — good enough for buzzer tones, not for timing-critical I/O.
-fn busyWaitUs(us: u32) void {
-    const cycles = us * 240; // 240 cycles per microsecond at 240 MHz
-    var i: u32 = 0;
-    while (i < cycles) : (i += 1) {
-        asm volatile ("");
-    }
-}
-
-// ================================================================
-// SSD1306 OLED DISPLAY DRIVER (128x64, I2C, monochrome)
-// ================================================================
-//
-// Pure Zig implementation — no U8g2, no C library.
-// Saves ~500KB of flash compared to U8g2.
-//
-// Architecture:
-//   oled_buf[page][column] — 8 pages of 128 bytes = 1024 bytes
-//   Each byte represents 8 vertical pixels (bit 0 = top pixel of page)
-//   SSD1306 page addressing mode: send page address, then 128 data bytes
-//
-// I2C communication is NOT YET IMPLEMENTED. The oledUpdate() function
-// is a placeholder. To complete:
-//   1. Add extern fn for ESP-IDF I2C driver (i2c_master_init, i2c_master_write)
-//   2. Send SSD1306 init sequence (30+ bytes of commands)
-//   3. In oledUpdate(), send oled_buf over I2C in 8 pages
-//
-// Font: 5x7 pixel monospace, ASCII 0x20-0x5A (space through Z).
-// Each glyph is 5 bytes, each byte is a column (top-to-bottom).
-// Characters are 6px wide (5px glyph + 1px spacing).
-
-const OLED_ADDR: u8   = 0x3C;    // SSD1306 I2C address (SA0=GND)
-const OLED_WIDTH: u8  = 128;
-const OLED_HEIGHT: u8 = 64;
-
-// Compute buffer size at compile time. The cast to usize prevents u8 overflow
-// (128 * 64 = 8192 which exceeds u8::MAX, but 8192/8 = 1024 fits in u16).
-const OLED_BUF_SIZE: usize = (@as(usize, OLED_WIDTH) * OLED_HEIGHT) / 8;
-var oled_buf: [OLED_BUF_SIZE]u8 = [_]u8{0} ** OLED_BUF_SIZE;
-
-/// 5x7 bitmap font: ASCII 32 (space) through 90 (Z).
-/// Each entry is 5 bytes, each byte is one column from top to bottom.
-/// Bit 0 = top pixel, bit 6 = bottom pixel (bit 7 unused for 7-row font).
-/// Extracted from classic 5x7 font commonly used in embedded displays.
-const FONT_5X7 = [_]u8{
-    0x00,0x00,0x00,0x00,0x00, // 32: space
-    0x00,0x5F,0x00,0x00,0x00, // 33: !
-    0x00,0x00,0x00,0x00,0x00, // 34: " (placeholder)
-    0x14,0x7F,0x14,0x7F,0x14, // 35: #
-    0x24,0x2A,0x7F,0x2A,0x12, // 36: $
-    0x23,0x13,0x08,0x64,0x62, // 37: %
-    0x36,0x49,0x55,0x22,0x50, // 38: &
-    0x00,0x05,0x03,0x00,0x00, // 39: '
-    0x1C,0x22,0x41,0x00,0x00, // 40: (
-    0x41,0x22,0x1C,0x00,0x00, // 41: )
-    0x08,0x2A,0x1C,0x2A,0x08, // 42: *
-    0x08,0x08,0x3E,0x08,0x08, // 43: +
-    0x50,0x30,0x00,0x00,0x00, // 44: ,
-    0x08,0x08,0x08,0x08,0x08, // 45: -
-    0x60,0x60,0x00,0x00,0x00, // 46: .
-    0x20,0x10,0x08,0x04,0x02, // 47: /
-    0x3E,0x51,0x49,0x45,0x3E, // 48: 0
-    0x00,0x42,0x7F,0x40,0x00, // 49: 1
-    0x42,0x61,0x51,0x49,0x46, // 50: 2
-    0x21,0x41,0x45,0x4B,0x31, // 51: 3
-    0x18,0x14,0x12,0x7F,0x10, // 52: 4
-    0x27,0x45,0x45,0x45,0x39, // 53: 5
-    0x3C,0x4A,0x49,0x49,0x30, // 54: 6
-    0x01,0x71,0x09,0x05,0x03, // 55: 7
-    0x36,0x49,0x49,0x49,0x36, // 56: 8
-    0x06,0x49,0x49,0x29,0x1E, // 57: 9
-    0x00,0x6C,0x6C,0x00,0x00, // 58: :
-    0x00,0x56,0x36,0x00,0x00, // 59: ;
-    0x00,0x08,0x14,0x22,0x41, // 60: <
-    0x14,0x14,0x14,0x14,0x14, // 61: =
-    0x41,0x22,0x14,0x08,0x00, // 62: >
-    0x02,0x01,0x51,0x09,0x06, // 63: ?
-    0x32,0x49,0x79,0x41,0x3E, // 64: @
-    0x7E,0x09,0x09,0x09,0x7E, // 65: A
-    0x7F,0x49,0x49,0x49,0x36, // 66: B
-    0x3E,0x41,0x41,0x41,0x22, // 67: C
-    0x7F,0x41,0x41,0x22,0x1C, // 68: D
-    0x7F,0x49,0x49,0x49,0x41, // 69: E
-    0x7F,0x09,0x09,0x01,0x01, // 70: F
-    0x3E,0x41,0x49,0x49,0x7A, // 71: G
-    0x7F,0x08,0x08,0x08,0x7F, // 72: H
-    0x41,0x7F,0x41,0x00,0x00, // 73: I
-    0x30,0x40,0x40,0x3F,0x00, // 74: J
-    0x7F,0x08,0x14,0x22,0x41, // 75: K
-    0x7F,0x40,0x40,0x40,0x40, // 76: L
-    0x7F,0x02,0x04,0x02,0x7F, // 77: M
-    0x7F,0x04,0x08,0x10,0x7F, // 78: N
-    0x3E,0x41,0x41,0x41,0x3E, // 79: O
-    0x7F,0x09,0x09,0x09,0x06, // 80: P
-    0x3E,0x41,0x51,0x21,0x5E, // 81: Q
-    0x7F,0x09,0x19,0x29,0x46, // 82: R
-    0x26,0x49,0x49,0x49,0x32, // 83: S
-    0x01,0x01,0x7F,0x01,0x01, // 84: T
-    0x3F,0x40,0x40,0x40,0x3F, // 85: U
-    0x1F,0x20,0x40,0x20,0x1F, // 86: V
-    0x7F,0x20,0x18,0x20,0x7F, // 87: W
-    0x63,0x14,0x08,0x14,0x63, // 88: X
-    0x03,0x04,0x78,0x04,0x03, // 89: Y
-    0x61,0x51,0x49,0x45,0x43, // 90: Z
-};
-
-/// Look up the 5-column bitmap for an ASCII character.
-/// Lowercase is folded to uppercase.
-/// Characters outside ASCII 32-90 render as space.
-fn fontChar(c: u8) [5]u8 {
-    if (c >= 'a' and c <= 'z') return fontChar(c - 32);
-    const idx: usize = if (c >= ' ' and c <= 'Z') @intCast(c - ' ') else 0;
-    const base = idx * 5;
-    return FONT_5X7[base..][0..5].*;
-}
-
-/// Set a single pixel in the display buffer.
-/// Coordinates are clipped to display bounds.
-/// The buffer uses SSD1306 page format:
-///   page = y / 8, bit = y % 8
-fn oledSetPixel(x: u8, y: u8, on: bool) void {
-    if (x >= OLED_WIDTH or y >= OLED_HEIGHT) return;
-    const page = y / 8;
-    const bit: u8 = @intCast(y % 8);
-    const idx: usize = @as(usize, page) * OLED_WIDTH + @as(usize, x);
-    if (on) {
-        oled_buf[idx] |= (@as(u8, 1) << @as(u3, @truncate(bit)));
-    } else {
-        oled_buf[idx] &= ~(@as(u8, 1) << @as(u3, @truncate(bit)));
-    }
-}
-
-/// Clear the entire display buffer to black.
-fn oledClear() void {
-    @memset(&oled_buf, 0);
-}
-
-/// Draw a single 5x7 character at pixel position (x, y).
-/// Characters are 6px wide (5px glyph + 1px space).
-fn oledDrawChar(x: u8, y: u8, c: u8) void {
-    const glyph = fontChar(c);
-    var col: u8 = 0;
-    while (col < 5) : (col += 1) {
-        var row: u8 = 0;
-        while (row < 7) : (row += 1) {
-            oledSetPixel(x + col, y + row, (glyph[col] & (@as(u8, 1) << @as(u3, @truncate(row)))) != 0);
-        }
-    }
-}
-
-/// Draw a null-terminated or sliced string at (x, y).
-/// Wraps at display edge. No newline handling — single line only.
-fn oledDrawStr(x: u8, y: u8, s: []const u8) void {
-    var cx = x;
-    for (s) |c| {
-        if (cx + 5 > OLED_WIDTH) break;
-        oledDrawChar(cx, y, c);
-        cx += 6; // 5px glyph + 1px spacing
-    }
-}
-
-/// Format an integer and draw it at (x, y).
-/// Uses std.fmt.bufPrint — may fail if the number doesn't fit in the buffer.
-/// On failure, draws nothing (silent).
-fn oledDrawInt(x: u8, y: u8, n: i32) void {
-    var buf: [12]u8 = undefined;
-    const s = std.fmt.bufPrint(&buf, "{d}", .{n}) catch return;
-    oledDrawStr(x, y, s);
-}
-
-/// Draw a horizontal progress bar with border.
-/// (x, y): top-left corner
-/// w, h: width and height in pixels
-/// pct: fill percentage (0-100)
-/// Minimum size: 3x3 pixels (1px border + 1px fill)
-fn oledDrawBar(x: u8, y: u8, w: u8, h: u8, pct: u8) void {
-    var row: u8 = 0;
-    while (row < h) : (row += 1) {
-        if (row == 0 or row == h - 1) {
-            // Top and bottom borders — full-width horizontal line
-            var col: u8 = 0;
-            while (col < w) : (col += 1) {
-                oledSetPixel(x + col, y + row, true);
-            }
-        } else {
-            // Side borders
-            oledSetPixel(x, y + row, true);
-            oledSetPixel(x + w - 1, y + row, true);
-            // Fill proportional to pct (inner width = w - 2)
-            const fill_w: u8 = @intCast((@as(u16, w) - 2) * pct / 100);
-            var col: u8 = 1;
-            while (col <= fill_w) : (col += 1) {
-                oledSetPixel(x + col, y + row, true);
-            }
-        }
-    }
-}
-
-/// Send SSD1306 initialization sequence.
-/// Must be called after oled_i2c_init() succeeds, Vext is enabled,
-/// and OLED RST is released.
-/// The sequence configures clock, mux ratio, charge pump,
-/// orientation, contrast, and turns the display on.
-fn oledInit() void {
-    const init_seq = [_]u8{
-        0xAE,           // Display OFF (sleep mode)
-        0xD5, 0x80,     // Set display clock divide ratio/oscillator frequency
-        0xA8, 0x3F,     // Set multiplex ratio to 63 (64 rows)
-        0xD3, 0x00,     // Set display offset = 0
-        0x40,           // Set display start line to 0
-        0x8D, 0x14,     // Enable charge pump regulator
-        0x20, 0x00,     // Set memory addressing mode to horizontal
-        0xA1,           // Set segment re-map (column 127 = SEG0)
-        0xC8,           // Set COM output scan direction (remapped)
-        0xDA, 0x12,     // Set COM pins hardware configuration
-        0x81, 0xCF,     // Set contrast control
-        0xD9, 0xF1,     // Set pre-charge period
-        0xDB, 0x40,     // Set VCOMH deselect level
-        0xA4,           // Entire display ON (resume to RAM content)
-        0xA6,           // Set normal display (not inverted)
-        0xAF,           // Display ON
-    };
-    _ = oled_i2c_write(0x00, &init_seq, init_seq.len);
-}
-
-/// Transmit the display buffer to the SSD1306 over I2C.
-/// Sends 8 pages of 128 bytes each. Each page is preceded by
-/// three command bytes: set page address (0xB0+page),
-/// set low column (0x00), set high column (0x10).
-fn oledUpdate() void {
-    var page: u8 = 0;
-    while (page < 8) : (page += 1) {
-        const cmds = [_]u8{ 0xB0 + page, 0x00, 0x10 };
-        _ = oled_i2c_write(0x00, &cmds, cmds.len);
-
-        const page_start: usize = @as(usize, page) * @as(usize, OLED_WIDTH);
-        _ = oled_i2c_write(0x40, oled_buf[page_start..][0..OLED_WIDTH].ptr, OLED_WIDTH);
-    }
-}
-
-// ================================================================
-// DISPLAY PAGES
-// ================================================================
-//
-// Multiple pages cycled by short-pressing the PRG button.
-// Pages are drawn on-demand (not continuously) to save CPU.
-// When the I2C driver is connected, pages will render to the physical OLED.
-
-var current_page: u8 = 0;
-const NUM_PAGES: u8 = 7;
-
-/// Session counter — total unique detections since first boot.
-/// Saved to /spiffs/session.dat and restored on boot.
-var session_total: u32 = 0;
-
-/// GPS position — lat/lon in decimal degrees × 10^6.
-/// 0 means no fix yet. Updated by parseNmea().
-var gps_lat: i32 = 0;   // e.g. 38117300 = 38.117300°
-var gps_lon: i32 = 0;   // e.g. -90199400 = -90.199400°
-var gps_fix: bool = false;
-var gps_sats: u8 = 0;
-
-/// NMEA sentence line accumulator. gps_read() fills this buffer,
-/// and on '\n', parseNmea() processes the complete sentence.
-var gps_line: [128]u8 = undefined;
-var gps_line_pos: usize = 0;
-
-/// Parse a complete NMEA sentence and extract GPS fix data.
-/// Handles $GPGGA (fix, sats) and $GPRMC (time, lat, lon).
-fn parseNmea(line: []const u8) void {
-    // Must start with '$'
-    if (line.len < 10 or line[0] != '$') return;
-
-    // Find first comma
-    var start: usize = 0;
-    for (line, 0..) |c, i| {
-        if (c == ',') { start = i + 1; break; }
-        if (i > 6) return; // sentence ID too long
-    }
-    if (start == 0) return;
-
-    // Check sentence type (2nd char after $)
-    const talker = line[1..start-1];
-
-    // $GPGGA — fix data
-    if (talker.len >= 5 and std.mem.eql(u8, talker[talker.len-5..], "GPGGA")) {
-        var fields: [15][]const u8 = undefined;
-        var fi: usize = 0;
-        var pos: usize = start;
-        while (fi < 15 and pos < line.len) : (fi += 1) {
-            const end = std.mem.indexOfScalarPos(u8, line, pos, ',') orelse line.len;
-            fields[fi] = line[pos..end];
-            pos = end + 1;
-        }
-
-        // Field 2: lat (DDMM.MMMM), 6: quality, 7: sats, 4: lon (DDDMM.MMMM)
-        if (fi >= 8 and fields[2].len > 0 and fields[4].len > 0) {
-            gps_lat = parseNmeaCoord(fields[2], if (fi >= 4) fields[3] else "N");
-            gps_lon = parseNmeaCoord(fields[4], if (fi >= 6) fields[5] else "E");
-
-            // Fix quality: 0=invalid, 1=GPS, 2=DGPS
-            gps_fix = fi >= 7 and fields[6].len > 0 and fields[6][0] != '0';
-
-            // Satellite count
-            if (fi >= 8 and fields[7].len > 0) {
-                gps_sats = std.fmt.parseInt(u8, fields[7], 10) catch 0;
-            }
-        }
-        return;
-    }
-
-    // $GPRMC — recommended minimum (fallback for lat/lon)
-    if (talker.len >= 5 and std.mem.eql(u8, talker[talker.len-5..], "GPRMC")) {
-        var fields: [10][]const u8 = undefined;
-        var fi: usize = 0;
-        var pos: usize = start;
-        while (fi < 10 and pos < line.len) : (fi += 1) {
-            const end = std.mem.indexOfScalarPos(u8, line, pos, ',') orelse line.len;
-            fields[fi] = line[pos..end];
-            pos = end + 1;
-        }
-
-        // Field 2: status (A=valid), 3: lat, 4: NS, 5: lon, 6: EW
-        if (fi >= 6 and fields[2].len > 0 and fields[2][0] == 'A') {
-            const lat = parseNmeaCoord(fields[3], fields[4]);
-            const lon = parseNmeaCoord(fields[5], fields[6]);
-            if (lat != 0) gps_lat = lat;
-            if (lon != 0) gps_lon = lon;
-            gps_fix = true;
-        }
-    }
-}
-
-/// Parse NMEA coordinate: DDMM.MMMM or DDDMM.MMMM → decimal degrees × 10^6.
-/// direction: "N"/"S"/"E"/"W" — determines sign.
-fn parseNmeaCoord(raw: []const u8, dir: []const u8) i32 {
-    if (raw.len < 4) return 0;
-
-    // Find decimal point
-    const dot = std.mem.indexOfScalar(u8, raw, '.') orelse return 0;
-    const deg_part = raw[0..dot-2];    // everything before MM
-    const min_part = raw[dot-2..];     // MM.MMMM
-
-    const deg: i32 = std.fmt.parseInt(i32, deg_part, 10) catch return 0;
-    const min: i32 = std.fmt.parseInt(i32, min_part[0..2], 10) catch return 0;
-    // Minutes fraction
-    var frac: i32 = 0;
-    if (min_part.len > 3) {
-        frac = std.fmt.parseInt(i32, min_part[3..], 10) catch 0;
-    }
-
-    // Convert: degrees + minutes/60, then × 10^6
-    // min_fraction = min * 1000000 / 60 + frac_factor
-    const min_scaled = @divTrunc(min * 1000000, 60) + @divTrunc(frac * 10000, 6000);
-    var result = deg * 1000000 + min_scaled;
-
-    // Apply sign
-    if (dir.len > 0 and (dir[0] == 'S' or dir[0] == 'W')) {
-        result = -result;
-    }
-
-    return result;
-}
-
-/// Persist session counter to SPIFFS.
-fn saveSession() void {
-    var buf: [16]u8 = undefined;
-    const s = std.fmt.bufPrint(&buf, "{d}", .{session_total}) catch return;
-    _ = spiffs_write_file("session.dat", s.ptr, s.len);
-}
-
-/// Restore session counter from SPIFFS on boot.
-fn restoreSession() void {
-    var buf: [16]u8 = undefined;
-    const n = spiffs_read_file("session.dat", &buf, buf.len);
-    if (n > 0) {
-        session_total = std.fmt.parseInt(u32, buf[0..@intCast(n)], 10) catch 0;
-    }
-}
-
-/// Append a detection event to the CSV log.
-/// Looks up the tracker entry to get the accumulated score.
-fn logCsv(mac: [6]u8, rssi: i8) void {
-    // Find the tracker entry for this MAC to get accumulated score
-    for (0..tracker_count) |i| {
-        if (std.mem.eql(u8, &trackers[i].mac, &mac)) {
-            const ks = kindStr(trackers[i].kind);
-            const methods = trackers[i].methods;
-            const score = trackers[i].score;
-
-            var line: [110]u8 = undefined;
-            const s = std.fmt.bufPrint(&line, "{d},{s},{X:0>2}{X:0>2}{X:0>2}{X:0>2}{X:0>2}{X:0>2},{d},{d},{d},{d},{X:0>2}\n", .{
-                tick_ms, ks,
-                mac[0], mac[1], mac[2], mac[3], mac[4], mac[5],
-                rssi, score, gps_lat, gps_lon, methods,
-            }) catch return;
-            line[s.len] = 0; // null-terminate for C
-            _ = spiffs_append_line("detections.csv", line[0..s.len :0].ptr);
-            return;
-        }
-    }
-}
-
-/// Dump CSV log to serial (called on long press). Entirely in C — see spiffs.c.
-extern fn spiffs_csv_export() void;
-
-// LoRa SX1262 — mesh networking on 915 MHz
-// lora_send: TX a packet (max 255 bytes), blocks until done.
-// lora_poll_receive: check for received packet, returns length (0 if none).
-extern fn lora_send(data: [*]const u8, len: u8) i32;
-extern fn lora_poll_receive(buf: [*]u8) i32;
-
-// GPS NEO-6M — UART1 on GPIO 4/5 at 9600 baud
-extern fn gps_read(buf: [*]u8, max_len: i32) i32;
-
-/// Draw page number indicator top-right (e.g. "1/7").
-fn drawPageNum(page: u8) void {
-    var buf: [4]u8 = undefined;
-    const s = std.fmt.bufPrint(&buf, "{d}/{d}", .{ page + 1, NUM_PAGES }) catch return;
-    oledDrawStr(96, 0, s);
-}
-
-/// Draw a battery bar: label + voltage + bar graphic.
-/// 3.3V = 0%, 4.2V = 100% (LiPo range).
-fn drawBatteryBar(x: u8, y: u8, w: u8, h: u8) void {
-    const mv = battery_read_mv();
-    const pct: u8 = if (mv < 3300) 0 else if (mv > 4200) 100 else @intCast(((@as(u32, @intCast(mv)) - 3300) * 100 / 900));
-
-    var buf: [20]u8 = undefined;
-    const v = @as(u32, @intCast(mv));
-    const s = std.fmt.bufPrint(&buf, "Bat:{d}.{d}V", .{ v / 1000, (v / 100) % 10 }) catch return;
-    oledDrawStr(x, y, s);
-    oledDrawBar(x + 66, y, w, h, pct);
-}
-
-/// Format MAC as hex string: "XX:XX:XX:XX:XX:XX"
-fn formatMac(mac: [6]u8, buf: []u8) []const u8 {
-    return std.fmt.bufPrint(buf, "{X:0<2}:{X:0<2}:{X:0<2}:{X:0<2}:{X:0<2}:{X:0<2}", .{ mac[0], mac[1], mac[2], mac[3], mac[4], mac[5] }) catch "??:??:??:??:??:??";
-}
-
-/// Tracker type to short string.
-fn kindStr(kind: TrackerType) []const u8 {
-    return switch (kind) {
-        .airtag => "AIR",
-        .tile => "TLE",
-        .samsung => "SAM",
-        .findmy => "FMY",
-        .flock_camera => "FLK",
-        .wifi_device => "WIF",
-        .drone => "DRN",
-        .raven => "RAV",
-        .unknown => "???",
-        else => "???",
-    };
-}
-
-/// Age in seconds since last_seen.
-fn ageSec(last: u32) u32 {
-    if (tick_ms >= last) return (tick_ms - last) / 1000;
-    return 0;
-}
-
-/// Page 0: Threat summary
-fn drawSummary() void {
-    var alpr_count: u32 = 0;
-    var ble_count: u32 = 0;
-    var drone_count: u32 = 0;
-    var raven_count: u32 = 0;
-    for (0..tracker_count) |i| {
-        switch (trackers[i].kind) {
-            .flock_camera, .wifi_device => alpr_count += 1,
-            .drone => drone_count += 1,
-            .raven => raven_count += 1,
-            else => ble_count += 1,
-        }
-    }
-
-    oledClear();
-    drawPageNum(0);
-    oledDrawStr(0, 0, "ARGUS");
-    oledDrawStr(0, 18, "ALPR:");
-    oledDrawInt(48, 18, @intCast(alpr_count));
-    oledDrawStr(78, 18, "DRN:");
-    oledDrawInt(108, 18, @intCast(drone_count));
-    oledDrawStr(0, 28, "BLE:");
-    oledDrawInt(48, 28, @intCast(ble_count));
-    oledDrawStr(78, 28, "RAV:");
-    oledDrawInt(108, 28, @intCast(raven_count));
-    oledDrawStr(0, 36, "OUI:");
-    oledDrawInt(48, 36, @intCast(KNOWN_OUIS_COUNT));
-    drawBatteryBar(0, 44, 40, 8);
-    // GPS status
-    var gps_buf: [24]u8 = undefined;
-    if (gps_fix) {
-        _ = std.fmt.bufPrint(&gps_buf, "GPS:{d}.{d} {d}sats", .{
-            @divTrunc(gps_lat, 1000000), @abs(@rem(@divTrunc(gps_lat, 10000), 100)), gps_sats,
-        }) catch {};
-    } else {
-        _ = std.fmt.bufPrint(&gps_buf, "GPS: NOFIX     ", .{}) catch {};
-    }
-    oledDrawStr(0, 52, &gps_buf);
-    oledUpdate();
-}
-
-/// Page 1: Active threats list (all trackers, sorted by last_seen desc)
-fn drawThreats() void {
-    oledClear();
-    drawPageNum(1);
-    oledDrawStr(0, 0, "THREATS");
-
-    var row: u8 = 0;
-    const start = if (tracker_count > 6) tracker_count - 6 else 0;
-    for (start..tracker_count) |i| {
-        if (row >= 6) break;
-        const y: u8 = 10 + row * 8;
-        var buf: [32]u8 = undefined;
-        const ks = kindStr(trackers[i].kind);
-        const s = scoreLevel(trackers[i].score);
-        _ = std.fmt.bufPrint(&buf, "{X:0<2}:{X:0<2} {s}{d} {s}", .{
-            trackers[i].mac[0], trackers[i].mac[1],
-            ks, trackers[i].rssi, s,
-        }) catch continue;
-        oledDrawStr(0, y, &buf);
-        row += 1;
-    }
-    oledDrawStr(0, 56, "PRG:next page");
-    oledUpdate();
-}
-
-/// Page 2: Proximity gauge for nearest threat
-fn drawProximity() void {
-    oledClear();
-    drawPageNum(2);
-    oledDrawStr(0, 0, "PROXIMITY");
-
-    if (tracker_count == 0) {
-        oledDrawStr(0, 18, "No threats nearby");
-        oledDrawStr(0, 56, "PRG:next page");
-        oledUpdate();
-        return;
-    }
-
-    // Find nearest by RSSI (highest = closest)
-    var nearest_idx: usize = 0;
-    var best_rssi: i8 = -128;
-    for (0..tracker_count) |i| {
-        if (trackers[i].rssi > best_rssi) {
-            best_rssi = trackers[i].rssi;
-            nearest_idx = i;
-        }
-    }
-
-    const t = trackers[nearest_idx];
-    var buf: [32]u8 = undefined;
-    const mac_str = formatMac(t.mac, buf[0..17]);
-    oledDrawStr(0, 12, mac_str);
-    oledDrawStr(0, 22, kindStr(t.kind));
-
-    // Score badge
-    var score_buf: [16]u8 = undefined;
-    _ = std.fmt.bufPrint(&score_buf, "SC: {d} {s}", .{ t.score, scoreLevel(t.score) }) catch {};
-    oledDrawStr(0, 34, &score_buf);
-
-    // GPS coordinates if fix available
-    if (gps_fix) {
-        var gps_buf: [32]u8 = undefined;
-        _ = std.fmt.bufPrint(&gps_buf, "GPS:{d}.{d} {d}.{d}", .{
-            @divTrunc(gps_lat, 1000000), @abs(@rem(@divTrunc(gps_lat, 10000), 100)),
-            @divTrunc(gps_lon, 1000000), @abs(@rem(@divTrunc(gps_lon, 10000), 100)),
-        }) catch {};
-        oledDrawStr(0, 44, &gps_buf);
-    }
-
-    // RSSI bar: -100 = 0%, -20 = 100%
-    const rssi_pct: u8 = if (t.rssi < -100) 0 else if (t.rssi > -20) 100 else blk: {
-        const val: u32 = @intCast(@as(i32, t.rssi) + 100);
-        break :blk @intCast(val * 100 / 80);
-    };
-    oledDrawBar(0, 44, 128, 10, rssi_pct);
-
-    oledDrawStr(0, 56, "PRG:next page");
-    oledUpdate();
-}
-
-/// Page 3: Detection history bar chart (last 60 minutes)
-fn drawHistory() void {
-    oledClear();
-    drawPageNum(3);
-    oledDrawStr(0, 0, "HISTORY");
-
-    // Count detections in 5 × 12-min buckets
-    var buckets = [_]u32{0} ** 5;
-    const now_sec = tick_ms / 1000;
-    for (0..tracker_count) |i| {
-        const age = now_sec -| (trackers[i].last_seen / 1000);
-        if (age > 3600) continue;
-        const bucket: usize = @intCast(age / 720); // 12 min = 720s
-        if (bucket < 5) buckets[bucket] += 1;
-    }
-
-    // Find max for scaling
-    var max_val: u32 = 1;
-    for (buckets) |b| {
-        if (b > max_val) max_val = b;
-    }
-
-    const bar_x = [_]u8{ 4, 28, 52, 76, 100 };
-    for (0..5) |b| {
-        const h: u8 = if (max_val == 0) 1 else @intCast(buckets[b] * 42 / max_val);
-        oledDrawBar(bar_x[b], 50 - h, 20, h, 100);
-    }
-
-    oledDrawStr(0, 52, " 12  24  36  48  60m");
-    oledDrawStr(0, 56, "PRG:next page");
-    oledUpdate();
-}
-
-/// Page 4: BLE-only tracker list
-fn drawBleList() void {
-    oledClear();
-    drawPageNum(4);
-    oledDrawStr(0, 0, "BLE TRACKERS");
-
-    var row: u8 = 0;
-    var rendered: u8 = 0;
-    var i: usize = tracker_count;
-    while (i > 0 and rendered < 6) {
-        i -= 1;
-        if (trackers[i].kind == .flock_camera or trackers[i].kind == .wifi_device) continue;
-        const y: u8 = 10 + row * 8;
-        var buf: [32]u8 = undefined;
-        _ = std.fmt.bufPrint(&buf, "{X:0<2}:{X:0<2} {s} {d}", .{
-            trackers[i].mac[0], trackers[i].mac[1],
-            kindStr(trackers[i].kind), trackers[i].rssi,
-        }) catch continue;
-        oledDrawStr(0, y, &buf);
-        row += 1;
-        rendered += 1;
-    }
-    oledDrawStr(0, 56, "PRG:next page");
-    oledUpdate();
-}
-
-/// Page 5: Session stats
-fn drawStats() void {
-    oledClear();
-    drawPageNum(5);
-    oledDrawStr(0, 0, "STATS");
-
-    const uptime_sec = tick_ms / 1000;
-    oledDrawStr(0, 14, "Up:");
-    var buf: [16]u8 = undefined;
-    _ = std.fmt.bufPrint(&buf, "{d}h{d}m", .{ uptime_sec / 3600, (uptime_sec / 60) % 60 }) catch {};
-    oledDrawStr(30, 14, &buf);
-
-    oledDrawStr(0, 24, "Uniq:");
-    oledDrawInt(48, 24, @intCast(tracker_count));
-
-    oledDrawStr(0, 34, "WiFi:");
-    oledDrawInt(48, 34, @intCast(wifi_get_frame_count()));
-
-    oledDrawStr(0, 44, "Bat:");
-    const mv = battery_read_mv();
-    const v = @as(u32, @intCast(mv));
-    _ = std.fmt.bufPrint(&buf, "{d}.{d}V", .{ v / 1000, (v / 100) % 10 }) catch {};
-    oledDrawStr(48, 44, &buf);
-
-    oledDrawStr(0, 56, "PRG:next page");
-    oledUpdate();
-}
-
-/// Page 6: System info
-fn drawSystem() void {
-    oledClear();
-    drawPageNum(6);
-    oledDrawStr(0, 0, "SYSTEM");
-
-    // Free heap (simplified — ESP-IDF provides this)
-    oledDrawStr(0, 14, "Firmware: v1.0");
-    oledDrawStr(0, 24, "Flash: 3MB app");
-    // GPS info
-    if (gps_fix) {
-        var gps_buf: [24]u8 = undefined;
-        _ = std.fmt.bufPrint(&gps_buf, "GPS:{d}sat 3Dfix", .{gps_sats}) catch {};
-        oledDrawStr(0, 34, &gps_buf);
-    } else {
-        oledDrawStr(0, 34, "GPS: no fix    ");
-    }
-
-    const mv = battery_read_mv();
-    const v = @as(u32, @intCast(mv));
-    var buf: [16]u8 = undefined;
-    _ = std.fmt.bufPrint(&buf, "V: {d}.{d}V", .{ v / 1000, (v / 100) % 10 }) catch {};
-    oledDrawStr(0, 44, &buf);
-
-    oledDrawStr(0, 56, "PRG:next page");
-    oledUpdate();
-}
-
-/// Route to the current page. Called on button press, at boot, and on new detection.
-fn drawPage() void {
-    switch (current_page) {
-        0 => drawSummary(),
-        1 => drawThreats(),
-        2 => drawProximity(),
-        3 => drawHistory(),
-        4 => drawBleList(),
-        5 => drawStats(),
-        6 => drawSystem(),
-        else => drawSummary(),
-    }
-}
-
-// ================================================================
-// ALERT SYSTEM
-// ================================================================
-//
-// Alert patterns follow the same scheme as Flock-You:
-//   NEW DETECTION: two ascending chirps (2000 Hz → 2800 Hz, 55ms each)
-//   HIGH CONFIDENCE: three fast beeps (to be added)
-//   CERTAIN: five rapid beeps (to be added)
-//   THREAT GONE: descending tone (to be added)
-//
-// The buzzer blocks during tones. For short chirps (<200ms total)
-// this is acceptable. For longer patterns, use a non-blocking
-// state machine that advances on each loop() iteration.
-
-/// Alert pattern by confidence score.
-/// 0-39: silent.  40-69: single medium beep.
-/// 70-84: three fast beeps.  85+: five rapid beeps (CERTAIN).
-fn alertByScore(score: u8) void {
-    if (score < 40) return;
-    if (score < 70) {
-        buzzerTone(1500, 80); // MEDIUM — single beep
-        return;
-    }
-    if (score < 85) {
-        // HIGH — 3 fast beeps
-        buzzerTone(2000, 30);
-        buzzerTone(2000, 30);
-        buzzerTone(2000, 30);
-        return;
-    }
-    // CERTAIN — 5 rapid beeps
-    buzzerTone(2000, 30);
-    buzzerTone(2000, 30);
-    buzzerTone(2000, 30);
-    buzzerTone(2000, 30);
-    buzzerTone(2000, 30);
-}
-
-// ================================================================
-// LoRa MESH NETWORKING
-// ================================================================
-//
-// Simple broadcast mesh — no routing, no acks. Each node transmits
-// detections and listens for peer broadcasts.
-//
-// Packet format (14 bytes):
-//   [class:1B][oui:3B][addr:6B][rssi:1B][score:1B][crc:1B]
-//
-// Node ID derived from WiFi frame counter mod 255 (unique enough).
-// Display: mesh detections appear with "M:" prefix on threats page.
-
-/// Build and send a mesh packet for a tracker entry.
-fn meshSend(entry: TrackerEntry) void {
-    var pkt: [14]u8 = undefined;
-    pkt[0] = @intFromEnum(entry.kind);          // class
-    pkt[1] = entry.mac[0];                       // OUI byte 0
-    pkt[2] = entry.mac[1];                       // OUI byte 1
-    pkt[3] = entry.mac[2];                       // OUI byte 2
-    pkt[4] = entry.mac[0];                       // MAC byte 0
-    pkt[5] = entry.mac[1];                       // MAC byte 1
-    pkt[6] = entry.mac[2];                       // MAC byte 2
-    pkt[7] = entry.mac[3];                       // MAC byte 3
-    pkt[8] = entry.mac[4];                       // MAC byte 4
-    pkt[9] = entry.mac[5];                       // MAC byte 5
-    pkt[10] = @bitCast(entry.rssi);              // RSSI (i8 → u8)
-    pkt[11] = entry.score;                       // confidence score
-    // Simple XOR checksum over first 12 bytes
-    var crc: u8 = 0;
-    for (0..12) |i| crc ^= pkt[i];
-    pkt[12] = crc;
-    pkt[13] = 0; // reserved
-
-    _ = lora_send(&pkt, 14);
-}
-
-/// Process a received mesh packet into the tracker table.
-fn meshRecv(pkt: []const u8) void {
-    if (pkt.len < 13) return;
-
-    // Verify CRC
-    var crc: u8 = 0;
-    for (0..12) |i| crc ^= pkt[i];
-    if (crc != pkt[12]) return;
-
-    const kind: TrackerType = @enumFromInt(pkt[0]);
-    const mac: [6]u8 = pkt[4..10].*;
-    const rssi: i8 = @bitCast(pkt[10]);
-    const score: u8 = pkt[11];
-
-    // Only track if it's a meaningful detection
-    if (kind == .unknown) return;
-
-    const result = ClassResult{ .kind = kind, .methods = 0 };
-    const is_new = trackDevice(mac, result, rssi);
-
-    if (is_new) {
-        // Update entry with mesh-provided score
-        for (0..tracker_count) |i| {
-            if (std.mem.eql(u8, &trackers[i].mac, &mac)) {
-                if (score > trackers[i].score) trackers[i].score = score;
-                break;
-            }
-        }
-    }
 }
 
 // ================================================================
@@ -1370,7 +322,6 @@ export fn zig_main() callconv(.c) void {
     // pull resistors, and interrupt state in a single call.
 
     _ = gpio_pin_init(PIN_LED, GPIO_OUTPUT, GPIO_PULL_NONE);
-    _ = gpio_pin_init(PIN_BUZZER, GPIO_OUTPUT, GPIO_PULL_NONE);
     _ = gpio_pin_init(PIN_BUTTON, GPIO_INPUT, GPIO_PULL_UP);
 
     // --- Boot animation ---
@@ -1383,12 +334,8 @@ export fn zig_main() callconv(.c) void {
     ledOn();  delayMs(150);
     ledOff();
 
-    // --- Startup chirp ---
-    // Single 1500 Hz tone for 80ms — audible confirmation of boot.
-    // Distinct from the alert chirps (2000/2800 Hz) so you can tell
-    // boot from detection by sound alone.
-
-    buzzerTone(1500, 80);
+    // Quick LED blink — visual boot confirmation
+    ledOn();  delayMs(50); ledOff();
 
     // --- Display init ---
     // Vext (GPIO 36) controls the switched 3.3V rail via P-channel MOSFET.
@@ -1420,13 +367,13 @@ export fn zig_main() callconv(.c) void {
         ledOn();  delayMs(50); ledOff(); delayMs(50);
         ledOn();  delayMs(50); ledOff();
     } else {
-        oledInit();
-        oledClear();
-        drawPage();
+        display.oledInit();
+        display.oledClear();
+        display.drawPage();
     }
 
     // Restore session counter from SPIFFS
-    restoreSession();
+    scanner.restoreSession();
 
     // ================================================================
     // MAIN LOOP
@@ -1459,14 +406,14 @@ export fn zig_main() callconv(.c) void {
         var poll_count: u32 = 0;
         while (ble_scan_poll(&ble_addr, &ble_rssi, &ble_adv_type, &ble_data, &ble_data_len) != 0) {
             poll_count += 1;
-            const result = classifyBle(ble_data[0..ble_data_len]);
-            const is_new = trackDevice(ble_addr, result, ble_rssi);
+            const result = scanner.classifyBle(ble_data[0..ble_data_len]);
+            const is_new = scanner.trackDevice(ble_addr, result, ble_rssi);
 
             if (is_new) {
                 had_new = true;
-                 session_total += 1;
-                saveSession();
-                logCsv(ble_addr, ble_rssi);
+                scanner.session_total += 1;
+                scanner.saveSession();
+                scanner.logCsv(ble_addr, ble_rssi);
             }
 
             // Yield every 8 events to avoid watchdog timeout
@@ -1476,13 +423,20 @@ export fn zig_main() callconv(.c) void {
         }
 
         if (had_new) {
-            if (current_page != 2) current_page = 2;
             var best: u8 = 0;
             for (0..tracker_count) |i| {
                 if (trackers[i].score > best) best = trackers[i].score;
             }
-            alertByScore(best);
-            drawPage();
+            display.alertLed(best);
+            // Broadcast highest-scoring detection over LoRa mesh
+            if (best >= 40) {
+                for (0..tracker_count) |i| {
+                    if (trackers[i].score == best) {
+                        mesh.meshSend(trackers[i]);
+                        break;
+                    }
+                }
+            }
         }
 
         // --- WiFi scan polling ---
@@ -1504,7 +458,7 @@ export fn zig_main() callconv(.c) void {
 
             // Skip unknown MACs — only track OUI matches or "Flock" SSIDs.
             // This avoids flooding the tracker table with every passing phone.
-            const result = classifyWiFi(wifi_addr, wifi_ssid[0..wifi_ssid_len]);
+            const result = scanner.classifyWiFi(wifi_addr, wifi_ssid[0..wifi_ssid_len]);
             if (result.kind == .unknown) {
                 // Yield periodically even when skipping
                 if (poll_count % 16 == 0) {
@@ -1513,13 +467,13 @@ export fn zig_main() callconv(.c) void {
                 continue;
             }
 
-            const is_new = trackDevice(wifi_addr, result, wifi_rssi);
+            const is_new = scanner.trackDevice(wifi_addr, result, wifi_rssi);
 
             if (is_new) {
                 had_new = true;
-                session_total += 1;
-                saveSession();
-                logCsv(wifi_addr, wifi_rssi);
+                scanner.session_total += 1;
+                scanner.saveSession();
+                scanner.logCsv(wifi_addr, wifi_rssi);
             }
 
             // Yield every 4 events to avoid watchdog timeout
@@ -1529,21 +483,19 @@ export fn zig_main() callconv(.c) void {
         }
 
         if (had_new) {
-            if (current_page != 2) current_page = 2;
             var best: u8 = 0;
-            var best_idx: usize = 0;
             for (0..tracker_count) |i| {
-                if (trackers[i].score > best) {
-                    best = trackers[i].score;
-                    best_idx = i;
+                if (trackers[i].score > best) best = trackers[i].score;
+            }
+            display.alertLed(best);
+            if (best >= 40) {
+                for (0..tracker_count) |i| {
+                    if (trackers[i].score == best) {
+                        mesh.meshSend(trackers[i]);
+                        break;
+                    }
                 }
             }
-            alertByScore(best);
-            // Broadcast highest-scoring detection over LoRa mesh
-            if (best >= 40) {
-                meshSend(trackers[best_idx]);
-            }
-            drawPage();
         }
 
         // --- Button handling ---
@@ -1571,14 +523,14 @@ export fn zig_main() callconv(.c) void {
                     }
                 } else {
                     // Short press: cycle to next page
-                    current_page = (current_page + 1) % NUM_PAGES;
-                    delayMs(40); // buzzer removed — just a short delay for tactile feel
+                    display.current_page = (display.current_page + 1) % display.NUM_PAGES;
+                    delayMs(40); // brief delay for tactile feel
                     while (buttonPressed()) {
                         delayMs(10);
                     }
                 }
 
-                drawPage();
+                display.drawPage();
             }
         }
 
@@ -1597,7 +549,7 @@ export fn zig_main() callconv(.c) void {
         var lora_buf: [255]u8 = undefined;
         const lora_len = lora_poll_receive(&lora_buf);
         if (lora_len > 0) {
-            meshRecv(lora_buf[0..@intCast(lora_len)]);
+            mesh.meshRecv(lora_buf[0..@intCast(lora_len)]);
         }
 
         // --- GPS NMEA accumulator ---
@@ -1608,12 +560,12 @@ export fn zig_main() callconv(.c) void {
         if (gps_n > 0) {
             const gps_data = gps_buf[0..@intCast(gps_n)];
             for (gps_data, 0..) |c, ci| {
-                if (c == '\n' and gps_line_pos > 0) {
-                    parseNmea(gps_line[0..gps_line_pos]);
-                    gps_line_pos = 0;
-                } else if (gps_line_pos < gps_line.len and c != '\r') {
-                    gps_line[gps_line_pos] = c;
-                    gps_line_pos += 1;
+                if (c == '\n' and scanner.gps_line_pos > 0) {
+                    scanner.parseNmea(scanner.gps_line[0..scanner.gps_line_pos]);
+                    scanner.gps_line_pos = 0;
+                } else if (scanner.gps_line_pos < scanner.gps_line.len and c != '\r') {
+                    scanner.gps_line[scanner.gps_line_pos] = c;
+                    scanner.gps_line_pos += 1;
                 }
                 // Yield periodically during burst reads
                 if (ci % 32 == 31) delayMs(5);

@@ -236,8 +236,6 @@ int lora_init(void) {
     vTaskDelay(pdMS_TO_TICKS(10));
 
     // Initialize SPI bus
-
-    // Initialize SPI bus
     spi_bus_config_t bus_cfg = {
         .mosi_io_num = PIN_MOSI,
         .miso_io_num = PIN_MISO,
