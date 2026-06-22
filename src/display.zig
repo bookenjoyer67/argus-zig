@@ -550,7 +550,10 @@ fn drawSystem() void {
     // Free heap (simplified — ESP-IDF provides this)
     oledDrawStr(0, 14, "Firmware: v1.0");
     oledDrawStr(0, 24, "Flash: 3MB app");
-    // GPS info
+    // Carrier probes (IMSI catcher indicator)
+    var probe_buf: [24]u8 = undefined;
+    _ = std.fmt.bufPrint(&probe_buf, "Carrier:{d}", .{scanner.carrier_probes}) catch {};
+    oledDrawStr(0, 34, &probe_buf);
     if (scanner.gps_fix) {
         var gps_buf: [24]u8 = undefined;
         _ = std.fmt.bufPrint(&gps_buf, "GPS:{d}sat 3Dfix", .{scanner.gps_sats}) catch {};

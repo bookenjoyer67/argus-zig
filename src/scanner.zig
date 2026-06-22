@@ -22,6 +22,7 @@ const display = @import("display.zig");
 // ================================================================
 //
 // Bitmask — each method contributes to the confidence score.
+// Add new methods here, then add entries to BLE_SIGNATURES below.
 
 /// Detection method flags (bitmask) — each method contributes to confidence score.
 pub const METHOD_OUI: u16         = 1 << 0; // MAC OUI match (40 pts)
@@ -37,9 +38,14 @@ pub const METHOD_DRONE: u16       = 1 << 8; // Drone Remote ID (BLE 0xFFFA or OU
 pub const RAVEN_FW_1_1: u16      = 1 << 9;  // Legacy — UUIDs 0x1809/0x1819
 pub const RAVEN_FW_1_2: u16      = 1 << 10; // UUIDs 0x31xx/0x32xx/0x3300
 pub const RAVEN_FW_1_3: u16      = 1 << 11; // UUIDs 0x34xx/0x3500
-pub const METHOD_CAM_SSID: u16  = 1 << 12; // SSID contains camera keyword (30 pts)
-pub const METHOD_SIDEWALK: u16   = 1 << 13; // Amazon Sidewalk device (50 pts)
+pub const METHOD_CAM_SSID: u16   = 1 << 12; // SSID contains camera keyword (30 pts)
+pub const METHOD_SIDEWALK: u16    = 1 << 13; // Amazon Sidewalk device (50 pts)
 pub const METHOD_WIFI_DRONE: u16  = 1 << 14; // WiFi Remote ID tag 221 (85 pts)
+
+/// Carrier probe request counter — SSIDs like "attwifi", "VerizonWiFi", etc.
+/// A spike in these from different MACs can indicate an IMSI catcher (Stingray)
+/// forcing phones off cellular networks, making them probe for known WiFi.
+pub var carrier_probes: u32 = 0;
 
 // ================================================================
 // OUI MATCHING
@@ -60,6 +66,36 @@ pub fn matchOui(mac: [6]u8) bool {
 // ================================================================
 
 /// Classification result from BLE or WiFi scanners.
+/// BLE detection signature table — data-driven approach.
+/// Each entry maps BLE advertisement patterns to tracker types
+/// and method flags. First match wins in classifyBle().
+/// Add new entries here without changing classifyBle().
+const BleSignature = struct {
+    company_id: ?u16,
+    service_uuids: []const u16,
+    tracker_type: display.TrackerType,
+    method: u16,
+};
+
+const BLE_SIGNATURES = [_]BleSignature{
+    // Apple Find My (AirTag, iPhone)
+    .{ .company_id = 0x004C, .service_uuids = &.{}, .tracker_type = .airtag, .method = METHOD_FINDMY },
+    // Tile trackers
+    .{ .company_id = null, .service_uuids = &.{0xFEED}, .tracker_type = .tile, .method = METHOD_TILE },
+    // Samsung SmartTag / SmartTag 2
+    .{ .company_id = 0x0075, .service_uuids = &.{}, .tracker_type = .samsung, .method = METHOD_MANUF },
+    // ASTM Drone Remote ID (BLE UUID 0xFFFA)
+    .{ .company_id = null, .service_uuids = &.{0xFFFA}, .tracker_type = .drone, .method = METHOD_DRONE },
+    // Amazon Sidewalk (Ring, Echo, Tile via Sidewalk)
+    .{ .company_id = 0x0171, .service_uuids = &.{}, .tracker_type = .unknown, .method = METHOD_SIDEWALK },
+    // Chipolo trackers (Immediate Alert service 0x1802)
+    .{ .company_id = null, .service_uuids = &.{0x1802}, .tracker_type = .unknown, .method = METHOD_TILE },
+    // Fitbit / wearables (company ID 0x0059)
+    .{ .company_id = 0x0059, .service_uuids = &.{}, .tracker_type = .unknown, .method = METHOD_BLE_NAME },
+    // Tesla phone key (BLE key fob service 0x1530)
+    .{ .company_id = null, .service_uuids = &.{0x1530}, .tracker_type = .unknown, .method = METHOD_BLE_NAME },
+};
+
 pub const ClassResult = struct {
     kind: display.TrackerType,
     methods: u16,
@@ -104,10 +140,12 @@ pub fn computeScore(methods: u16, rssi: i8, mac: [6]u8) u8 {
 // ================================================================
 
 /// Parse BLE advertisement data and classify the tracker type + method flags.
+/// Iterates the BLE_SIGNATURES table for manufacturer/service UUID matches.
+/// Raven detection has special multi-UUID counting for firmware classification.
 pub fn classifyBle(adv_data: []const u8) ClassResult {
     var methods: u16 = 0;
     var kind: display.TrackerType = .unknown;
-    var raven_uuids: u8 = 0; // count of Raven UUIDs found
+    var raven_uuids: u8 = 0;
     var raven_fw_major: u8 = 0;
 
     var pos: usize = 0;
@@ -118,39 +156,32 @@ pub fn classifyBle(adv_data: []const u8) ClassResult {
         const ad_type = adv_data[pos + 1];
         const payload = adv_data[pos + 2 .. pos + 1 + len];
 
-        if (ad_type == 0xFF and payload.len >= 3) {
+        // Manufacturer specific data (AD type 0xFF)
+        if (ad_type == 0xFF and payload.len >= 2) {
             const company: u16 = @as(u16, payload[0]) | (@as(u16, payload[1]) << 8);
+
+            // Apple Find My special check: company 0x004C + byte 2 == 0x12
             if (company == 0x004C and payload.len >= 3 and payload[2] == 0x12) {
                 kind = .airtag;
                 methods |= METHOD_FINDMY;
             }
-            if (company == 0x0075) {
-                kind = .samsung;
-                methods |= METHOD_MANUF;
-            }
-            // Amazon Sidewalk (Ring, Echo, Tile via Sidewalk)
-            if (company == 0x0171) {
-                methods |= METHOD_SIDEWALK;
-            }
-            if (company == 0x09C8) {
-                methods |= METHOD_MANUF;
-                if (kind == .unknown) kind = .unknown;
+
+            // Iterate signature table for company_id matches
+            for (BLE_SIGNATURES) |sig| {
+                if (sig.company_id != null and sig.company_id.? == company) {
+                    if (sig.tracker_type != .unknown) kind = sig.tracker_type;
+                    methods |= sig.method;
+                }
             }
         }
 
+        // 16-bit service UUIDs (AD types 0x02/0x03)
         if ((ad_type == 0x02 or ad_type == 0x03) and payload.len >= 2) {
             var u: usize = 0;
             while (u + 1 < payload.len) : (u += 2) {
                 const uuid: u16 = @as(u16, payload[u]) | (@as(u16, payload[u + 1]) << 8);
-                if (uuid == 0xFEED) {
-                    kind = .tile;
-                    methods |= METHOD_TILE;
-                }
-                if (uuid == 0xFFFA) {
-                    kind = .drone;
-                    methods |= METHOD_DRONE;
-                }
-                // Raven/ShotSpotter gunshot sensor UUIDs
+
+                // Raven — special multi-UUID counting (kept separate for FW classification)
                 if (uuid == 0x180A or uuid == 0x3100 or uuid == 0x3200 or
                     uuid == 0x3300 or uuid == 0x3400 or uuid == 0x3500 or
                     uuid == 0x1809 or uuid == 0x1819) {
@@ -163,22 +194,30 @@ pub fn classifyBle(adv_data: []const u8) ClassResult {
                         if (raven_fw_major < 1) raven_fw_major = 1;
                     }
                 }
+
+                // Iterate signature table for service UUID matches
+                for (BLE_SIGNATURES) |sig| {
+                    for (sig.service_uuids) |su| {
+                        if (uuid == su) {
+                            if (sig.tracker_type != .unknown) kind = sig.tracker_type;
+                            methods |= sig.method;
+                        }
+                    }
+                }
             }
         }
 
         if (ad_type == 0x08 or ad_type == 0x09) {
-            // Complete or shortened local name
             if (payload.len > 0) methods |= METHOD_BLE_NAME;
         }
 
         pos += 1 + len;
     }
 
-    // Raven classification: 1+ service UUIDs = confirmed
+    // Raven classification: 1+ Raven service UUIDs = confirmed
     if (raven_uuids >= 1) {
         kind = .raven;
         methods |= METHOD_RAVEN;
-        // Encode firmware version in method flags for display
         switch (raven_fw_major) {
             3 => methods |= RAVEN_FW_1_3,
             2 => methods |= RAVEN_FW_1_2,
@@ -209,6 +248,22 @@ pub fn classifyWiFi(mac: [6]u8, ssid: []const u8) ClassResult {
             }
             if (match) {
                 methods |= METHOD_CAM_SSID;
+                break;
+            }
+        }
+    }
+
+    // Carrier SSID probes (IMSI catcher indicator) — count unique carrier SSIDs
+    const carrier_ssids = [_][]const u8{ "attwifi", "VerizonWiFi", "xfinitywifi", "T-Mobile", "vodafone", "EE WiFi", "Orange", "o2wifi" };
+    for (carrier_ssids) |cs| {
+        if (ssid.len >= cs.len) {
+            var match = true;
+            for (cs, 0..) |kc, ki| {
+                const sc = std.ascii.toLower(ssid[ki]);
+                if (sc != std.ascii.toLower(kc)) { match = false; break; }
+            }
+            if (match) {
+                carrier_probes += 1;
                 break;
             }
         }
