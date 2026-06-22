@@ -44,6 +44,35 @@ extern int lora_init(void);
 // Defined in gps.c
 extern int gps_init(void);
 
+// Defined in config.c
+extern int config_is_configured(void);
+extern int config_role_is_base(void);
+extern int config_get(const char *key, char *out, int out_len);
+
+// Defined in wifi.c
+extern int wifi_ap_start(const char *ssid);
+extern int wifi_ap_stop(void);
+extern int wifi_connect_sta(const char *ssid, const char *password);
+
+// Defined in httpd.c
+extern int httpd_start_server(int setup_mode);
+extern int httpd_stop_server(void);
+
+// Defined in main.zig — setup-mode OLED screen, loops until reboot
+extern void zig_main_setup(void);
+
+// ----------------------------------------------------------------
+// Mesh node ID — low byte of the eFuse base MAC. Stable per device,
+// used by the LoRa mesh to identify this unit to peers.
+// ----------------------------------------------------------------
+#include "esp_mac.h"
+
+uint8_t mesh_node_id(void) {
+    uint8_t mac[6] = {0};
+    esp_read_mac(mac, ESP_MAC_WIFI_STA);
+    return mac[5];
+}
+
 // ================================================================
 // OLED I2C helpers — called from Zig via extern fn
 // ================================================================
@@ -276,21 +305,41 @@ void app_main(void) {
 
     printf("Argus Zig — booting\n");
 
-    // --- Start BLE and WiFi scanning ---
+    // --- Mount SPIFFS first (config + detection log live here) ---
+    spiffs_init_storage();
+
+    // --- First-boot onboarding ---
+    // Unconfigured device: bring up the "Argus Setup" AP and captive setup
+    // page, then show instructions on the OLED. zig_main_setup() loops until
+    // POST /api/setup saves the config and reboots into normal operation.
+    if (!config_is_configured()) {
+        printf("Argus: unconfigured — entering setup mode\n");
+        wifi_ap_start("Argus Setup");
+        httpd_start_server(1);
+        zig_main_setup(); // never returns
+    }
+
+    // --- Normal operation ---
     // NimBLE and WiFi promiscuous mode start in their own tasks.
     // Results are pushed to ring buffers, polled from zig_main().
     ble_scan_init();
     wifi_scan_init();
-
-    // --- Mount SPIFFS for detection logging ---
-    // CSV log at /spiffs/detections.csv, session counter at /spiffs/session.dat
-    spiffs_init_storage();
 
     // --- Initialize LoRa radio for mesh networking ---
     lora_init();
 
     // --- Initialize GPS UART (NEO-6M on GPIO 4/5) ---
     gps_init();
+
+    // --- Base-station role: join home WiFi + serve the dashboard ---
+    // The promiscuous sniffer keeps running on the connected channel.
+    if (config_role_is_base()) {
+        char ssid[33] = {0}, pass[65] = {0};
+        config_get("ssid", ssid, sizeof(ssid));
+        config_get("pass", pass, sizeof(pass));
+        if (ssid[0]) wifi_connect_sta(ssid, pass);
+        httpd_start_server(0);
+    }
 
     // --- Hand off to Zig ---
     //

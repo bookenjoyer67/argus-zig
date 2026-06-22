@@ -388,6 +388,15 @@ int lora_poll_receive(uint8_t *buf) {
     return 0;
 }
 
+// RSSI (dBm) of the most recently received packet, via GetPacketStatus.
+// LoRa response: [RssiPkt, SnrPkt, SignalRssiPkt]; dBm = -RssiPkt/2.
+int lora_last_rssi(void) {
+    if (!spi) return 0;
+    uint8_t rx[5]; // [status_prev, status, RssiPkt, SnrPkt, SignalRssiPkt]
+    lora_cmd_read(OP_GET_PACKET_STATUS, NULL, 0, rx, 3);
+    return -((int)rx[2]) / 2;
+}
+
 static void lora_calibrate(void) {
     uint8_t p = 0x7F; // calibrate all blocks
     lora_cmd(OP_CALIBRATE, &p, 1);

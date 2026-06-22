@@ -117,22 +117,103 @@ static void wifi_sniffer_cb(void *buf, wifi_promiscuous_pkt_type_t type) {
     wifi_ring_push(&r);
 }
 
-// Initialize WiFi in station-only promiscuous mode.
-// Returns 0 on success, negative on error.
-int wifi_scan_init(void) {
-    // Init network interface + event loop
+// ----------------------------------------------------------------
+// Shared init + AP / STA modes (added for onboarding + dashboard)
+// ----------------------------------------------------------------
+//
+// esp_netif_init / event loop / esp_wifi_init must run exactly once.
+// The setup flow uses AP mode (Layer 1); normal operation uses STA
+// promiscuous, with the base-station role additionally connecting to
+// home WiFi (Layer 2). Promiscuous capture coexists with a connected
+// STA on the connected channel.
+
+static bool wifi_base_inited = false;
+static esp_netif_t *wifi_netif_sta = NULL;
+static esp_netif_t *wifi_netif_ap = NULL;
+
+static esp_err_t wifi_common_init(void) {
+    if (wifi_base_inited) return ESP_OK;
     esp_netif_init();
     esp_event_loop_create_default();
-    esp_netif_create_default_wifi_sta();
-
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     esp_err_t ret = esp_wifi_init(&cfg);
     if (ret != ESP_OK) {
         printf("Argus: WiFi init failed: %d\n", ret);
-        return -1;
+        return ret;
     }
+    wifi_base_inited = true;
+    return ESP_OK;
+}
 
-    ret = esp_wifi_set_mode(WIFI_MODE_STA);
+// Start an open access point (no password) for the setup captive page.
+// DHCP server runs on 192.168.4.x; the setup UI lives at 192.168.4.1.
+int wifi_ap_start(const char *ssid) {
+    if (wifi_common_init() != ESP_OK) return -1;
+    if (!wifi_netif_ap) wifi_netif_ap = esp_netif_create_default_wifi_ap();
+
+    if (esp_wifi_set_mode(WIFI_MODE_AP) != ESP_OK) return -2;
+
+    wifi_config_t ap = {0};
+    size_t n = strlen(ssid);
+    if (n > sizeof(ap.ap.ssid)) n = sizeof(ap.ap.ssid);
+    memcpy(ap.ap.ssid, ssid, n);
+    ap.ap.ssid_len = n;
+    ap.ap.channel = 1;
+    ap.ap.max_connection = 4;
+    ap.ap.authmode = WIFI_AUTH_OPEN;
+
+    if (esp_wifi_set_config(WIFI_IF_AP, &ap) != ESP_OK) return -3;
+    if (esp_wifi_start() != ESP_OK) return -4;
+    printf("Argus: WiFi AP '%s' started (192.168.4.1)\n", ssid);
+    return 0;
+}
+
+int wifi_ap_stop(void) {
+    esp_wifi_stop();
+    return 0;
+}
+
+// STA event handler — retries association and logs the assigned IP.
+static void wifi_sta_event(void *arg, esp_event_base_t base,
+                           int32_t id, void *data) {
+    (void)arg;
+    if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
+        esp_wifi_connect();
+    } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
+        esp_wifi_connect();
+    } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
+        ip_event_got_ip_t *e = (ip_event_got_ip_t *)data;
+        printf("Argus: dashboard at http://" IPSTR "\n", IP2STR(&e->ip_info.ip));
+    }
+}
+
+// Connect to home WiFi for base-station dashboard mode. The promiscuous
+// sniffer (started by wifi_scan_init) keeps running on the connected channel.
+int wifi_connect_sta(const char *ssid, const char *password) {
+    if (!wifi_netif_sta) wifi_netif_sta = esp_netif_create_default_wifi_sta();
+
+    esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID,
+                                         &wifi_sta_event, NULL, NULL);
+    esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP,
+                                         &wifi_sta_event, NULL, NULL);
+
+    wifi_config_t sta = {0};
+    strncpy((char *)sta.sta.ssid, ssid, sizeof(sta.sta.ssid) - 1);
+    strncpy((char *)sta.sta.password, password, sizeof(sta.sta.password) - 1);
+
+    if (esp_wifi_set_config(WIFI_IF_STA, &sta) != ESP_OK) return -1;
+    if (esp_wifi_connect() != ESP_OK) return -2;
+    printf("Argus: connecting to home WiFi '%s'\n", ssid);
+    return 0;
+}
+
+// Initialize WiFi in station-only promiscuous mode.
+// Returns 0 on success, negative on error.
+int wifi_scan_init(void) {
+    if (wifi_common_init() != ESP_OK) return -1;
+    if (!wifi_netif_sta) wifi_netif_sta = esp_netif_create_default_wifi_sta();
+
+    esp_err_t ret = esp_wifi_set_mode(WIFI_MODE_STA);
     if (ret != ESP_OK) {
         printf("Argus: WiFi set mode failed: %d\n", ret);
         return -2;

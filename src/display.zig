@@ -340,6 +340,17 @@ pub fn drawBoot(msg: []const u8) void {
     oledUpdate();
 }
 
+/// First-boot onboarding screen — shows AP name + setup URL.
+pub fn drawSetup() void {
+    oledClear();
+    oledDrawStrScaled(4, 0, "SETUP", 2);
+    oledDrawStr(0, 22, "Join WiFi:");
+    oledDrawStr(0, 32, "  Argus Setup");
+    oledDrawStr(0, 44, "Open in browser:");
+    oledDrawStr(0, 54, "  192.168.4.1");
+    oledUpdate();
+}
+
 // ================================================================
 // DISPLAY PAGES
 // ================================================================
@@ -357,11 +368,18 @@ fn drawPageNum(page: u8) void {
     oledDrawStr(96, 0, s);
 }
 
+/// Map battery millivolts to a percentage (3.3V = 0%, 4.2V = 100%).
+pub fn batteryPct(mv: i32) u8 {
+    if (mv < 3300) return 0;
+    if (mv > 4200) return 100;
+    return @intCast((@as(u32, @intCast(mv)) - 3300) * 100 / 900);
+}
+
 /// Draw a battery bar: label + voltage + bar graphic.
 /// 3.3V = 0%, 4.2V = 100% (LiPo range).
 pub fn drawBatteryBar(x: u8, y: u8, w: u8, h: u8) void {
     const mv = main.battery_read_mv();
-    const pct: u8 = if (mv < 3300) 0 else if (mv > 4200) 100 else @intCast(((@as(u32, @intCast(mv)) - 3300) * 100 / 900));
+    const pct: u8 = batteryPct(mv);
 
     var buf: [20]u8 = undefined;
     const v = @as(u32, @intCast(mv));
@@ -412,7 +430,7 @@ fn drawSummary() void {
     var track_count: u32 = 0; // consumer trackers: AirTag, Tile, Samsung, FindMy
     for (0..main.tracker_count) |i| {
         switch (main.trackers[i].kind) {
-            .flock_camera, .wifi_device, .drone, .raven, .camera => surv_count += 1,
+            .flock_camera, .drone, .raven, .camera => surv_count += 1,
             else => track_count += 1,
         }
     }
@@ -454,7 +472,7 @@ fn drawThreats() void {
         if (row >= 6) break;
         // Filter to surveillance types only — skip consumer trackers
         switch (main.trackers[i].kind) {
-            .flock_camera, .wifi_device, .drone, .raven, .camera => {},
+            .flock_camera, .drone, .raven, .camera => {},
             else => continue,
         }
         const y: u8 = 10 + row * 8;

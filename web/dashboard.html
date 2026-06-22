@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Argus Dashboard</title>
+<style>
+  :root {
+    --bg:#0a0a1a; --surface:#1a1a2e; --text:#e0e0e0; --accent:#ff1493;
+    --flock:#ff4444; --drone:#4488ff; --raven:#ff44ff; --camera:#ff8844;
+    --tracker:#44ff44; --stingray:#ff0000;
+    --green:#00cc66; --yellow:#ffcc00; --orange:#ff8800; --red:#ff3333;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text);
+         font-family:system-ui,sans-serif; padding:16px 16px 64px; }
+  mono, .mono { font-family:ui-monospace,Menlo,Consolas,monospace; }
+  h1 { letter-spacing:4px; margin:0 0 16px; font-size:22px; }
+  h2 { font-size:13px; text-transform:uppercase; letter-spacing:2px;
+       opacity:.6; margin:0 0 10px; }
+  .panel { background:var(--surface); border-radius:12px; padding:16px;
+           margin-bottom:16px; }
+  .grid { display:grid; grid-template-columns:repeat(6,1fr); gap:10px; }
+  .tile { border-radius:10px; padding:14px 6px; text-align:center;
+          background:#12122a; border:2px solid #222; cursor:pointer; }
+  .tile .n { font-size:28px; font-weight:700; }
+  .tile .l { font-size:11px; opacity:.7; margin-top:4px; letter-spacing:1px; }
+  .tile.green { border-color:var(--green); }
+  .tile.yellow { border-color:var(--yellow); }
+  .tile.red { border-color:var(--red); }
+  .tile.sr-off { border-color:#444; opacity:.5; }
+  .tile.sr-on { border-color:var(--stingray); animation:pulse 1s infinite; }
+  @keyframes pulse { 50% { opacity:.4; } }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  td { padding:5px 6px; border-bottom:1px solid #222; }
+  .k-flock,.k-wifi_device { color:var(--flock); }
+  .k-drone { color:var(--drone); }
+  .k-raven { color:var(--raven); }
+  .k-camera,.k-flock_camera { color:var(--camera); }
+  .k-airtag,.k-tile,.k-samsung,.k-findmy { color:var(--tracker); }
+  .peer .dot { color:var(--green); }
+  .peer.off { opacity:.5; }
+  .peer.off .dot { color:#666; }
+  .bar { position:fixed; left:0; right:0; bottom:0; background:#070714;
+         border-top:1px solid #222; padding:10px 16px; display:flex;
+         gap:16px; align-items:center; font-size:13px; flex-wrap:wrap; }
+  .pill { padding:3px 12px; border-radius:20px; font-weight:600; font-size:12px;
+          text-transform:uppercase; letter-spacing:1px; }
+  .pill.clear { background:var(--green); color:#000; }
+  .pill.aware { background:var(--yellow); color:#000; }
+  .pill.watched { background:var(--orange); color:#000; }
+  .pill.targeted { background:var(--red); color:#fff; }
+  .bar a, .bar button { color:var(--accent); background:none; border:1px solid var(--accent);
+          border-radius:6px; padding:5px 10px; cursor:pointer; text-decoration:none;
+          font-size:12px; }
+  .spacer { flex:1; }
+</style>
+</head>
+<body>
+  <h1>ARGUS</h1>
+
+  <div class="panel">
+    <h2>Threat Grid</h2>
+    <div class="grid" id="grid">
+      <div class="tile" data-filter="flock"><div class="n" id="t-flock">0</div><div class="l">FLOCK</div></div>
+      <div class="tile" data-filter="drone"><div class="n" id="t-drone">0</div><div class="l">DRONE</div></div>
+      <div class="tile" data-filter="raven"><div class="n" id="t-raven">0</div><div class="l">RAVEN</div></div>
+      <div class="tile" data-filter="camera"><div class="n" id="t-camera">0</div><div class="l">CAMERA</div></div>
+      <div class="tile" data-filter="tracker"><div class="n" id="t-track">0</div><div class="l">TRACKERS</div></div>
+      <div class="tile sr-off" id="t-stingray"><div class="n">&#9679;</div><div class="l">STINGRAY</div></div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Live Feed</h2>
+    <table><tbody id="feed"><tr><td>Waiting for detections...</td></tr></tbody></table>
+  </div>
+
+  <div class="panel">
+    <h2 id="mesh-title">Mesh</h2>
+    <div id="mesh">No peers heard.</div>
+  </div>
+
+  <div class="bar">
+    <span>Uptime: <span id="uptime" class="mono">--</span></span>
+    <span>Battery: <span id="batt" class="mono">--</span></span>
+    <span>Threat: <span id="threat" class="pill clear">clear</span></span>
+    <span class="spacer"></span>
+    <a href="/api/export/csv">Export CSV</a>
+    <span id="ver" class="mono" style="opacity:.5">v?</span>
+  </div>
+
+<script>
+const POLL_STATUS_MS = 3000, POLL_FEED_MS = 10000, POLL_MESH_MS = 30000;
+let feedFilter = null;
+
+function tileClass(n) { return n === 0 ? 'green' : n <= 2 ? 'yellow' : 'red'; }
+function setTile(id, n) {
+  const el = document.getElementById(id);
+  el.textContent = n;
+  el.closest('.tile').className = 'tile ' + tileClass(n);
+}
+function fmtUptime(s) {
+  const h = Math.floor(s/3600), m = Math.floor((s%3600)/60);
+  return h + 'h ' + m + 'm';
+}
+function ago(s) {
+  if (s < 60) return s + 's ago';
+  if (s < 3600) return Math.floor(s/60) + 'm ago';
+  return Math.floor(s/3600) + 'h ago';
+}
+
+async function pollStatus() {
+  try {
+    const s = await (await fetch('/api/status')).json();
+    setTile('t-flock', s.surv_breakdown.flock_camera);
+    setTile('t-drone', s.surv_breakdown.drone);
+    setTile('t-raven', s.surv_breakdown.raven);
+    setTile('t-camera', s.surv_breakdown.camera);
+    setTile('t-track', s.track_count);
+    document.getElementById('t-stingray').className =
+      'tile ' + (s.stingray_active ? 'sr-on' : 'sr-off');
+    const pill = document.getElementById('threat');
+    pill.className = 'pill ' + s.threat_level;
+    pill.textContent = s.threat_level;
+    document.getElementById('uptime').textContent = fmtUptime(s.uptime_seconds);
+    document.getElementById('batt').textContent = s.battery_pct + '%';
+    document.getElementById('ver').textContent = 'v' + s.firmware_version;
+  } catch (e) {}
+}
+
+async function pollFeed() {
+  try {
+    const dets = await (await fetch('/api/detections')).json();
+    const rows = dets
+      .filter(d => !feedFilter ||
+        (feedFilter === 'flock' && d.kind === 'flock_camera') ||
+        (feedFilter === 'tracker' && ['airtag','tile','samsung','findmy'].includes(d.kind)) ||
+        d.kind === feedFilter)
+      .map(d => {
+        const src = d.source === 'mesh' ? ' <span style="opacity:.6">(mesh)</span>' : '';
+        return `<tr class="k-${d.kind}">
+          <td>${d.kind.toUpperCase().slice(0,3)}</td>
+          <td class="mono">${d.oui}</td>
+          <td class="mono">${d.rssi}</td>
+          <td>${d.level}</td>
+          <td class="mono">${d.methods}</td>
+          <td>${src || '(direct)'}</td></tr>`;
+      });
+    document.getElementById('feed').innerHTML =
+      rows.length ? rows.join('') : '<tr><td>No matching detections.</td></tr>';
+  } catch (e) {}
+}
+
+async function pollMesh() {
+  try {
+    const peers = await (await fetch('/api/mesh')).json();
+    const online = peers.filter(p => p.last_seen_seconds < 300).length;
+    document.getElementById('mesh-title').textContent = `Mesh (${online} peers online)`;
+    document.getElementById('mesh').innerHTML = peers.length
+      ? peers.map(p => {
+          const off = p.last_seen_seconds >= 300;
+          return `<div class="peer ${off?'off':''}">
+            <span class="dot">&#9679;</span> ${p.id}
+            &nbsp; ${ago(p.last_seen_seconds)} &nbsp; ${p.rssi} dBm &nbsp;
+            ${p.detections_shared} shared</div>`;
+        }).join('')
+      : 'No peers heard.';
+  } catch (e) {}
+}
+
+document.querySelectorAll('.tile[data-filter]').forEach(t => {
+  t.addEventListener('click', () => {
+    const f = t.dataset.filter;
+    feedFilter = feedFilter === f ? null : f;
+    pollFeed();
+  });
+});
+
+setInterval(pollStatus, POLL_STATUS_MS);
+setInterval(pollFeed, POLL_FEED_MS);
+setInterval(pollMesh, POLL_MESH_MS);
+pollStatus(); pollFeed(); pollMesh();
+</script>
+</body>
+</html>

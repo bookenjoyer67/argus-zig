@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Argus Setup</title>
+<style>
+  :root { --bg:#0a0a1a; --surface:#1a1a2e; --text:#e0e0e0; --accent:#ff1493; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text);
+         font-family:system-ui,sans-serif; display:flex; min-height:100vh;
+         align-items:center; justify-content:center; padding:16px; }
+  .card { background:var(--surface); border-radius:12px; padding:24px;
+          width:100%; max-width:380px; box-shadow:0 8px 32px rgba(0,0,0,.5); }
+  h1 { margin:0 0 4px; letter-spacing:3px; }
+  p.sub { margin:0 0 20px; opacity:.6; font-size:14px; }
+  label { display:block; margin:14px 0 4px; font-size:13px; opacity:.8; }
+  input, select { width:100%; padding:10px; border-radius:8px; border:1px solid #333;
+          background:#0f0f22; color:var(--text); font-size:15px; }
+  button { width:100%; margin-top:22px; padding:12px; border:0; border-radius:8px;
+           background:var(--accent); color:#fff; font-size:16px; font-weight:600;
+           cursor:pointer; }
+  button:disabled { opacity:.5; }
+  #wifi { display:none; }
+  #msg { margin-top:14px; text-align:center; min-height:18px; font-size:14px; }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>ARGUS</h1>
+  <p class="sub">Device setup</p>
+  <form id="f">
+    <label for="name">Device name</label>
+    <input id="name" name="name" placeholder="Kitchen" maxlength="32" required>
+
+    <label for="role">Role</label>
+    <select id="role" name="role">
+      <option value="mobile">Mobile (pocket scanner)</option>
+      <option value="base">Base station (web dashboard)</option>
+    </select>
+
+    <div id="wifi">
+      <label for="ssid">Home WiFi name</label>
+      <input id="ssid" name="ssid" placeholder="MyNetwork" maxlength="32">
+      <label for="pass">Home WiFi password</label>
+      <input id="pass" name="pass" type="password" maxlength="64">
+    </div>
+
+    <button id="save" type="submit">Save &amp; Reboot</button>
+    <div id="msg"></div>
+  </form>
+</div>
+<script>
+  const role = document.getElementById('role');
+  const wifi = document.getElementById('wifi');
+  role.addEventListener('change', () => {
+    wifi.style.display = role.value === 'base' ? 'block' : 'none';
+  });
+
+  document.getElementById('f').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const btn = document.getElementById('save');
+    const msg = document.getElementById('msg');
+    btn.disabled = true;
+    msg.textContent = 'Saving...';
+    const data = new URLSearchParams(new FormData(e.target));
+    try {
+      await fetch('/api/setup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: data.toString()
+      });
+      msg.textContent = 'Saved. Device is rebooting.';
+    } catch (err) {
+      msg.textContent = 'Saved. Device is rebooting.';
+    }
+  });
+</script>
+</body>
+</html>

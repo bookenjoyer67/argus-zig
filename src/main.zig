@@ -50,6 +50,17 @@ const std = @import("std");
 pub const display = @import("display.zig");
 pub const scanner = @import("scanner.zig");
 pub const mesh = @import("mesh.zig");
+pub const config = @import("config.zig");
+pub const api = @import("api.zig");
+
+// Force the dashboard API exports (in the non-root api.zig) to be analyzed
+// and emitted into libargus.a — Zig only lazily analyzes imported files.
+comptime {
+    _ = &api.zig_api_status;
+    _ = &api.zig_api_detections;
+    _ = &api.zig_api_mesh;
+    _ = &api.zig_api_config;
+}
 
 // Re-export for modules that need them
 pub const TrackerType = display.TrackerType;
@@ -274,6 +285,7 @@ pub const TrackerEntry = struct {
     methods: u16,            // bitmask of detection methods
     rssi_history: [5]i8,     // recent RSSI values (ring buffer)
     rssi_hidx: u3,           // write index into rssi_history
+    source: u8,              // 0 = direct (this unit), 1 = mesh (peer-relayed)
 };
 
 pub var trackers: [MAX_TRACKERS]TrackerEntry = undefined;
@@ -337,13 +349,22 @@ const LED_PULSE_PEAK: u32 = 200;
 var led_alive_last: u32 = 0;
 
 /// Highest confidence score among trackers seen in the last THREAT_RECENCY_MS.
-fn currentThreatLevel() u8 {
+pub fn currentThreatLevel() u8 {
     var best: u8 = 0;
     for (0..tracker_count) |i| {
         if ((tick_ms -% trackers[i].last_seen) > THREAT_RECENCY_MS) continue;
         if (trackers[i].score > best) best = trackers[i].score;
     }
     return best;
+}
+
+/// Threat-level label matching the LED state machine: used by the dashboard.
+pub fn threatLevelStr() []const u8 {
+    const level = currentThreatLevel();
+    if (scanner.stingray_alert_active or level >= scanner.SCORE_CERT) return "targeted";
+    if (level >= scanner.SCORE_HIGH) return "watched";
+    if (level >= scanner.SCORE_MED) return "aware";
+    return "clear";
 }
 
 /// Triangle-wave duty: ramps 0 → peak → 0 over `period` ms.
@@ -724,5 +745,38 @@ export fn zig_main() callconv(.c) void {
         // This is the minimum sleep — vTaskDelay(1) = one tick = 10ms.
 
         delayMs(10);
+    }
+}
+
+// ================================================================
+// SETUP-MODE ENTRY POINT (first boot / onboarding)
+// ================================================================
+//
+/// Called from C app_main() when the device is unconfigured. The C side
+/// has already started the "Argus Setup" AP and the setup HTTP server.
+/// This brings up the OLED and shows connection instructions, looping
+/// until POST /api/setup saves the config and reboots the device.
+export fn zig_main_setup() callconv(.c) void {
+    led_pwm_init();
+
+    // Bring up the OLED (same sequence as the normal boot path).
+    _ = gpio_pin_init(PIN_VEXT, GPIO_OUTPUT, GPIO_PULL_NONE);
+    _ = gpio_write(PIN_VEXT, 0); // enable Vext (active LOW)
+    delayMs(50);
+    _ = gpio_pin_init(PIN_OLED_RST, GPIO_OUTPUT, GPIO_PULL_NONE);
+    _ = gpio_write(PIN_OLED_RST, 0);
+    delayMs(100);
+    _ = gpio_write(PIN_OLED_RST, 1);
+    delayMs(100);
+
+    if (oled_i2c_init() == 0) {
+        display.oledInit();
+        display.drawSetup();
+    }
+
+    // Loop forever — a gentle pulse signals "waiting for setup".
+    while (true) {
+        led_pwm_set(triangleDuty(tick_ms % 2000, 2000, LED_PULSE_PEAK));
+        delayMs(50);
     }
 }

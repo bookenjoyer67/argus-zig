@@ -164,6 +164,20 @@ pub fn computeScore(methods: u16, rssi: i8, mac: [6]u8) u8 {
         if (score >= 20) score -= 20 else score = 0;
     }
 
+    // Cap OUI-only WiFi hits below MEDIUM. An OUI match tells you what
+    // chip is in the device, not what the device is. Without SSID
+    // corroboration (Flock-XXXX, camera keywords, Remote ID), a Liteon
+    // module in a laptop looks identical to one in a Flock camera.
+    // Keep it in the tracker table for logging, but don't alert.
+    if ((methods & METHOD_OUI != 0) and
+        (methods & METHOD_SSID_PREFIX == 0) and
+        (methods & METHOD_SSID_FLOCK == 0) and
+        (methods & METHOD_CAM_SSID == 0) and
+        (methods & METHOD_WIFI_DRONE == 0))
+    {
+        if (score > 25) score = 25;
+    }
+
     return if (score > 100) 100 else @intCast(score);
 }
 
@@ -491,6 +505,7 @@ pub fn trackDevice(mac: [6]u8, result: ClassResult, rssi: i8) bool {
         .methods = result.methods,
         .rssi_history = [_]i8{0} ** 5,
         .rssi_hidx = 0,
+        .source = 0,
     };
 
     if (main.tracker_count < main.MAX_TRACKERS) {
@@ -508,6 +523,46 @@ pub fn trackDevice(mac: [6]u8, result: ClassResult, rssi: i8) bool {
         main.trackers[oldest_idx] = entry;
     }
     return true;
+}
+
+// ================================================================
+// DETECTION COUNTS BY KIND (shared by OLED summary + dashboard API)
+// ================================================================
+
+/// Per-kind detection counts plus surveillance/tracker rollups.
+pub const KindCounts = struct {
+    flock_camera: u32 = 0,
+    wifi_device: u32 = 0,
+    drone: u32 = 0,
+    raven: u32 = 0,
+    camera: u32 = 0,
+    airtag: u32 = 0,
+    tile: u32 = 0,
+    samsung: u32 = 0,
+    findmy: u32 = 0,
+    surv: u32 = 0,
+    track: u32 = 0,
+};
+
+/// Tally the tracker table by kind. Surveillance = flock/wifi/drone/raven/camera;
+/// everything else counts as a consumer tracker.
+pub fn countByKind() KindCounts {
+    var c = KindCounts{};
+    for (0..main.tracker_count) |i| {
+        switch (main.trackers[i].kind) {
+            .flock_camera => { c.flock_camera += 1; c.surv += 1; },
+            .wifi_device => { c.wifi_device += 1; c.surv += 1; },
+            .drone => { c.drone += 1; c.surv += 1; },
+            .raven => { c.raven += 1; c.surv += 1; },
+            .camera => { c.camera += 1; c.surv += 1; },
+            .airtag => { c.airtag += 1; c.track += 1; },
+            .tile => { c.tile += 1; c.track += 1; },
+            .samsung => { c.samsung += 1; c.track += 1; },
+            .findmy => { c.findmy += 1; c.track += 1; },
+            else => { c.track += 1; },
+        }
+    }
+    return c;
 }
 
 // ================================================================
