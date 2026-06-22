@@ -83,14 +83,14 @@ static void lora_wait_busy(void) {
 
 // Single SPI transaction: send tx_data, optionally receive rx_data.
 // Returns 0 on success.
-// SPI transaction: send tx_len bytes, then optionally receive rx_len bytes.
-// Uses half-duplex mode (SPI_DEVICE_HALFDUPLEX) — SX1262 requires this.
+// Full-duplex SPI transaction. tx_len bytes sent, rx_len bytes received.
+// Total clock cycles = max(tx_len, rx_len). MOSI pads with 0x00 if needed.
 static int lora_spi_xfer(const uint8_t *tx_data, size_t tx_len,
                           uint8_t *rx_data, size_t rx_len) {
     lora_wait_busy();
 
     spi_transaction_t t = {0};
-    t.length = tx_len * 8;
+    t.length = ((tx_len > rx_len) ? tx_len : rx_len) * 8;
     t.rxlength = rx_len * 8;
     t.tx_buffer = tx_data;
     t.rx_buffer = rx_data;
@@ -108,15 +108,15 @@ static void lora_cmd(uint8_t opcode, const uint8_t *params, size_t plen) {
 }
 
 // Write command and read response bytes.
-// In half-duplex mode: send [opcode, NOP, params...], receive rx_data_len bytes.
-// Status bytes arrive during send phase (discarded), so data starts at rx[0].
+// Full-duplex: [opcode, NOP, params...] → MISO returns [status_prev, status, data0...]
+// rx buffer receives rx_data_len + 2 bytes. Data starts at rx[2].
 static void lora_cmd_read(uint8_t opcode, const uint8_t *params, size_t plen,
                            uint8_t *rx, size_t rx_data_len) {
     uint8_t tx[3 + 32]; // opcode + NOP + params
     tx[0] = opcode;
     tx[1] = 0x00;       // RADIO_NOP — gives chip a cycle to latch read address
     if (plen > 0) memcpy(tx + 2, params, plen);
-    lora_spi_xfer(tx, 2 + plen, rx, rx_data_len);
+    lora_spi_xfer(tx, 2 + plen, rx, rx_data_len + 2);
 }
 
 // --- SX1262 commands ---
@@ -188,9 +188,9 @@ static void lora_set_tx_params(uint8_t power, uint8_t ramp_time) {
 }
 
 static uint16_t lora_get_irq_status(void) {
-    uint8_t rx[3]; // [status, irq_hi, irq_lo]
-    lora_cmd_read(OP_GET_IRQ_STATUS, NULL, 0, rx, 3);
-    return ((uint16_t)rx[1] << 8) | rx[2];
+    uint8_t rx[4]; // [status_prev, status, irq_hi, irq_lo]
+    lora_cmd_read(OP_GET_IRQ_STATUS, NULL, 0, rx, 2);
+    return ((uint16_t)rx[2] << 8) | rx[3];
 }
 
 static void lora_clear_irq_status(uint16_t mask) {
@@ -199,24 +199,24 @@ static void lora_clear_irq_status(uint16_t mask) {
 }
 
 static uint8_t lora_get_status(void) {
-    uint8_t rx[1]; // [chip_status]
+    uint8_t rx[3]; // [status_prev, status, chip_status]
     lora_cmd_read(OP_GET_STATUS, NULL, 0, rx, 1);
-    return rx[0]; // bits 7-5: mode (1=STDBY_RC, 2=STDBY_XOSC, 3=FS, 4=RX, 5=TX)
+    return rx[2]; // bits 7-5: mode (1=STDBY_RC, 2=STDBY_XOSC, 3=FS, 4=RX, 5=TX)
 }
 
 static uint8_t lora_get_rx_buffer_status(uint8_t *payload_len, uint8_t *rx_ptr) {
-    uint8_t rx[4]; // [status, raw, plen, ptr]
-    lora_cmd_read(OP_GET_RX_BUFFER_STATUS, NULL, 0, rx, 4);
-    *payload_len = rx[2];
-    *rx_ptr = rx[3];
-    return rx[1]; // raw status
+    uint8_t rx[5]; // [status_prev, status, raw, plen, ptr]
+    lora_cmd_read(OP_GET_RX_BUFFER_STATUS, NULL, 0, rx, 3);
+    *payload_len = rx[3];
+    *rx_ptr = rx[4];
+    return rx[2]; // raw status
 }
 
 static void lora_read_buffer(uint8_t offset, uint8_t *data, uint8_t len) {
     uint8_t p = offset;
-    uint8_t rx[1 + 255]; // [status, data...]
-    lora_cmd_read(OP_READ_BUFFER, &p, 1, rx, len + 1);
-    memcpy(data, rx + 1, len);
+    uint8_t rx[2 + 255]; // [status_prev, status, data...]
+    lora_cmd_read(OP_READ_BUFFER, &p, 1, rx, len);
+    memcpy(data, rx + 2, len);
 }
 
 static void lora_write_buffer(uint8_t offset, const uint8_t *data, uint8_t len) {
@@ -278,10 +278,9 @@ int lora_init(void) {
 
     spi_device_interface_config_t dev_cfg = {
         .mode = 0,                          // SPI mode 0
-        .clock_speed_hz = 1000000,          // 1 MHz (conservative)
+        .clock_speed_hz = 1000000,          // 1 MHz
         .spics_io_num = PIN_NSS,
         .queue_size = 1,
-        .flags = SPI_DEVICE_HALFDUPLEX,     // SX1262 is half-duplex
     };
     ret = spi_bus_add_device(SPI2_HOST, &dev_cfg, &spi);
     if (ret != ESP_OK) {

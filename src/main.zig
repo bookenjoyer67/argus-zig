@@ -525,7 +525,7 @@ export fn zig_main() callconv(.c) void {
             if (buttonPressed()) {
                 // Check for long press (>1 second hold)
                 var hold_ms: u32 = 50;
-                while (buttonPressed() and hold_ms < 3200) {
+                while (buttonPressed() and hold_ms < 15200) {
                     delayMs(50);
                     hold_ms += 50;
                 }
@@ -534,8 +534,8 @@ export fn zig_main() callconv(.c) void {
                     // Long press — LED blink, then CSV dump over serial
                     ledOn();  delayMs(50); ledOff();
                     spiffs_csv_export();
-                    // Very long press (>3s) — also clear CSV after dump
-                    if (hold_ms >= 3000) {
+                    // Very long press (>15s) — also clear CSV after dump
+                    if (hold_ms >= 15000) {
                         delayMs(200);
                         _ = spiffs_clear_csv();
                     }
