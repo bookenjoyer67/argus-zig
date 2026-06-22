@@ -85,13 +85,20 @@ Message type parsing (Basic ID, Location, Self-ID).
 - [ ] OUI database maintenance — add as new prefixes are discovered
 - [x] Raven threshold tuning — 2+ UUIDs = confirmed, 1 UUID = low confidence
 - [x] Stingray burst detector implementation (see STINGRAY.md)
-- [ ] WiFi channel coverage 1-13 with adaptive dwell
-- [x] Stealth mode (double-press toggle, OLED off, silent scanning)
+- [x] WiFi channel hopping (mobile role) — 1-11 adaptive dwell; EU 1-13 by
+      extending HOP_CHANNELS in main.zig
+- [x] Stealth mode (double-press toggle, OLED off, silent scanning, BLE adv off)
 - [x] UX enhancements (threat-level LED patterns, boot sequence, LEDC PWM)
+- [x] Non-Flock camera surfacing — category-aware OUI cap (camera/drone OUIs →
+      MEDIUM), vendor/category OUI_DB built from ouis.txt sections (CAMERA_DETECTION.md, Approach B)
 
 ### Medium term
 
-- [~] Web dashboard + onboarding (see LAYERS_1_2.md) — httpd, config, api, HTML scaffold done
+- [x] Web dashboard + onboarding (see LAYERS_1_2.md) — base-station httpd,
+      config, api, Threats/Map/Mesh tabs, Leaflet camera map, configurable
+      base location (see DASHBOARD_MAP.md)
+- [x] BLE phone interface — NUS GATT passkey-paired stream (SC+MITM, NVS
+      bonds) + web/ble.html Web Bluetooth client hosted on GitHub Pages
 - [ ] Captive portal DNS redirect
 - [ ] Geiger mode on proximity page (audio clicks proportional to RSSI)
 - [ ] MAC ignore list for persistent false positives

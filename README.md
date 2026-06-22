@@ -68,13 +68,26 @@ A thin C entry point (`main/main.c`) initializes ESP-IDF subsystems and
 hands control to `zig_main()`. Control never returns to C.
 
 ```
-src/main.zig      — Entry point, main loop, extern fns, tracker table
+src/main.zig      — Entry point, main loop, extern fns, tracker table, WiFi hopping
 src/scanner.zig   — BLE/WiFi classifiers, scoring, NMEA, CSV, Stingray
-src/display.zig   — SSD1306 driver, 7-page UI, LED alerts
+src/display.zig   — SSD1306 driver, 7-page UI, LED alerts, BLE passkey screen
 src/mesh.zig      — LoRa mesh packets
-main/*.c          — Hardware drivers (ble, wifi, lora, spiffs, gps, oled)
-src/ouis.txt      — 73 MAC OUI prefixes (compile-time parsed)
+src/api.zig       — JSON renderers for the dashboard + BLE stream
+main/*.c          — Hardware drivers (ble + GATT, wifi, lora, spiffs, gps, oled)
+web/ble.html      — Web Bluetooth phone client (hosted on GitHub Pages)
+src/ouis.txt      — surveillance MAC OUI prefixes + vendor/category (compile-time parsed)
 ```
+
+![](assets/divider.svg)
+
+## ✦ Phone & web interface
+
+- **Base station** — joins your home WiFi and serves a live dashboard
+  (Threats / Map / Mesh, Leaflet camera map, CSV export).
+- **Mobile unit** — exposes the same live view over **Bluetooth**:
+  `web/ble.html` is a Web Bluetooth client (Android / desktop Chrome) that
+  pairs with a passkey shown on the OLED and streams status, detections,
+  mesh peers, and a GPS map — all while WiFi channel hopping keeps running.
 
 ![](assets/divider.svg)
 

@@ -7,7 +7,9 @@ Zig + ESP-IDF. Zero external parts for basic operation. AGPLv3.
 
 **Status:** Detection engine feature-complete. Raven, ALPR, drone Remote ID,
 consumer cameras, Amazon Sidewalk, and tracker classification all working.
-Hardware-tested. UX refinements active. Web dashboard pending.
+Hardware-tested. UX refinements active. Web dashboard (base station) working.
+WiFi channel hopping (mobile) and a BLE GATT passkey-paired phone interface
+(`web/ble.html`, hosted on GitHub Pages) shipped.
 
 ## Build
 
@@ -32,28 +34,33 @@ Always run build-zig.sh first.
 
 ```
 main/main.c              ← app_main: NVS init, starts BLE/WiFi/LoRa/GPS/SPIFFS
-main/ble.c               ← NimBLE passive scanning + ring buffer
-main/wifi.c              ← WiFi promiscuous sniffer (802.11 parsing, Remote ID IE)
+main/ble.c               ← NimBLE passive scan + ring buffer + NUS GATT peripheral
+                           (passkey-paired phone stream)
+main/wifi.c              ← WiFi promiscuous sniffer (802.11, Remote ID IE) + channel
+                           hopping (mobile role) + AP/STA for setup & dashboard
 main/lora.c              ← SX1262 LoRa driver (SPI, full opcode set)
 main/spiffs.c            ← SPIFFS mount, CSV append/export
 main/gps.c               ← NEO-6M UART driver
-main/main.c (oled/gpio)  ← I2C OLED driver + GPIO wrappers + battery ADC
+main/main.c (oled/gpio)  ← I2C OLED driver + GPIO wrappers + battery ADC + LED PWM
 
-src/main.zig     590L    ← Entry point, main loop, extern fns, OUI db, tracker table
-src/scanner.zig  767L    ← BLE/WiFi classifiers, scoring, NMEA parser, CSV logging,
+src/main.zig     998L    ← Entry point, main loop, extern fns, OUI_DB (vendor/category), tracker table,
+                           WiFi channel hopping, BLE GATT stream push
+src/scanner.zig  774L    ← BLE/WiFi classifiers, scoring, NMEA parser, CSV logging,
                            BLE_SIGNATURES table, Stingray burst detector, OUI-only cap
-src/display.zig  744L    ← SSD1306 driver, 5x7 font, 7-page UI, LED alerts, SURV/TRACK split
-src/mesh.zig      72L    ← LoRa mesh packet send/receive, CRC
-src/api.zig      205L    ← Dashboard API endpoints (/api/status, /api/detections, /api/mesh)
+src/display.zig  791L    ← SSD1306 driver, 5x7 font, 7-page UI, LED alerts, passkey screen
+src/mesh.zig     376L    ← LoRa mesh packets, CRC, heartbeats, peer/camera map
+src/api.zig      242L    ← JSON renderers (status/detections/mesh/cameras/config)
 src/config.zig    30L    ← Device config struct, SPIFFS load/save
 
-main/httpd.c     233L    ← ESP-IDF HTTP server, setup page handler, dashboard routes
-main/config.c     89L    ← SPIFFS JSON config read/write (C helpers)
+main/httpd.c     263L    ← ESP-IDF HTTP server, setup page handler, dashboard routes
+main/config.c    131L    ← SPIFFS flat key=value config read/write (C helpers)
 
-web/dashboard.html 186L  ← Dashboard HTML/CSS/JS (dark theme, vanilla JS polling)
-web/setup.html     80L   ← Onboarding setup page
+web/dashboard.html 433L  ← Base-station dashboard (theme, map, vanilla JS polling)
+web/ble.html       339L  ← BLE phone client (Web Bluetooth, hosted on GitHub Pages)
+web/setup.html     102L  ← Onboarding setup page
 
-src/ouis.txt      96L    ← 73 MAC OUI prefixes (@embedFile + comptime parsed)
+src/ouis.txt      96L    ← surveillance OUIs + vendor/category section headers (@embedFile + comptime)
+.github/workflows/pages.yml ← deploys web/ble.html to GitHub Pages (Actions)
 ```
 
 ## Key design decisions
@@ -66,13 +73,17 @@ GNU ld can't resolve. ReleaseSafe is ~20KB larger but links correctly.
 
 **Pure-Zig SSD1306** — ~2KB vs 500KB for U8g2. Only need 5x7 text on 128x64.
 
-**comptime OUI parsing** — @embedFile + comptime loop. No SPIFFS, no runtime parse.
+**comptime OUI parsing** — @embedFile + comptime loop builds `OUI_DB`
+(prefix + vendor name + category) from ouis.txt. No SPIFFS, no runtime parse.
 Edit ouis.txt, rebuild, done.
 
-**OUI-only WiFi cap** — An OUI match tells you the chip, not the device.
-Without SSID corroboration (Flock-XXXX, camera keywords, Remote ID), score
-is capped at 25. Tracked and logged, but never alerts or shows on surveillance
-page. SSID is the discriminator between a Liteon router and a Flock camera.
+**OUI-only WiFi cap (category-aware)** — An OUI match tells you the chip, not
+the device. Without SSID corroboration (Flock-XXXX, camera keywords, Remote ID),
+general-purpose chips (Liteon/Flock) cap at 25 — tracked and logged but silent.
+Camera/drone-manufacturer chips rarely appear outside surveillance products, so
+they cap at 50 (MEDIUM): surfaced as `.camera`/`.drone`, shown on the surveillance
+page with an LED pulse, but no buzzer or LoRa broadcast. Category comes from the
+ouis.txt section the OUI sits under (see CAMERA_DETECTION.md).
 
 **Fixed tracker table** — [MAX_TRACKERS] static array. No heap, no fragmentation.
 
@@ -92,13 +103,39 @@ CSV logging, UX. extern fn boundary is the API.
 
 Stingray alert overlays on summary page and appears as a row on page 1 when active.
 
+## Phone & web interface
+
+Three surfaces, all fed by the same Zig state via `api.zig` JSON renderers:
+
+- **Base dashboard** — `web/dashboard.html`, embedded in flash and served by
+  `main/httpd.c` only in base role (joins home WiFi). Threats/Map/Mesh tabs,
+  Leaflet camera map, CSV export at `/api/export/csv`, config + location POST.
+- **BLE phone client** — `web/ble.html`, a Web Bluetooth client hosted on
+  GitHub Pages (NOT served by the device — Web Bluetooth requires HTTPS).
+  Connects to the NUS GATT service in `main/ble.c`, pairs via a passkey shown
+  on the OLED (Secure Connections + MITM, bonds persisted to NVS), and streams
+  tagged JSON. Mobile-friendly; keeps WiFi channel hopping running.
+- **Setup page** — `web/setup.html`, served over the "Argus Setup" AP on first
+  boot until onboarding POSTs config and reboots.
+
+BLE stream framing: each message is `<tag><json>\n` where tag ∈ S/D/M/C/G
+(status/detections/mesh/cameras/config). The Zig main loop renders in its own
+task (single owner of tracker state) and `main/ble.c` chunks the bytes into
+MTU-sized notifications. Phone commands arrive on the RX characteristic.
+
+Bonds persist via `tools/nimble_ref_sdkconfig.txt` (`CONFIG_BT_NIMBLE_NVS_PERSIST`)
+because `sdkconfig` is gitignored and regenerated by `tools/patch-sdkconfig.py`.
+
 ## Button
 
 | Gesture | Action |
 |---------|--------|
 | Short press | Next page |
+| Double press | Toggle stealth mode (OLED off, BLE advertising off) |
 | Hold 1-2s | CSV dump over serial |
 | Hold 5s+ | Factory reset (clear SPIFFS + reboot) |
+
+During BLE pairing the OLED shows a 6-digit passkey screen to enter on the phone.
 
 ## Pin map (Heltec V3)
 
@@ -129,8 +166,12 @@ Reserved: GPIO 33,34,37,38 (SPI flash), 26 (SubSPI), 45,46 (strapping),
 
 - Add features in `src/` — logic lives across main/display/scanner/mesh
 - Add C functions as `pub extern fn` in `src/main.zig`
-- Add OUIs to `src/ouis.txt` — one `XX:XX:XX` per line
+- Add OUIs to `src/ouis.txt` under a `# Section` header — the nearest preceding
+  comment sets the vendor name; a header keyword (flock/drone/remote id/camera/
+  surveillance) sets the running category that drives the OUI-only score cap
 - Add BLE signatures to `BLE_SIGNATURES` table in `src/scanner.zig` line ~80
+- Add BLE stream commands in the `main.zig` RX dispatch (tagged S/D/M/C/G,
+  rendered by `api.zig`); WiFi channels live in `HOP_CHANNELS` in `main.zig`
 - After Zig changes: `./build-zig.sh && idf.py build`
 
 ## What NOT to do
@@ -148,10 +189,14 @@ Reserved: GPIO 33,34,37,38 (SPI flash), 26 (SubSPI), 45,46 (strapping),
    switch to LEDC PWM.
 
 2. **BLE scan and WiFi promiscuous share the radio.** ESP32 coexistence
-   handles this but scan intervals may shift under heavy WiFi traffic.
+   handles this but scan intervals may shift under heavy WiFi traffic. An
+   active BLE GATT connection (phone client) also competes with the passive
+   scan; a relaxed connection interval keeps scan windows usable.
 
-3. **No web dashboard yet.** Base station mode planned (see LAYERS_1_2.md).
-   Currently USB serial export only.
+3. **Web dashboard is base-station only.** `main/httpd.c` serves it when the
+   role is base (joined to home WiFi). Mobile units expose state over BLE
+   (`web/ble.html`) instead. CSV export is available at `/api/export/csv`
+   (base) and over USB serial (long press).
 
 4. **Stingray detection is probabilistic.** Indirect detection via carrier
    probe burst analysis. Cannot confirm — only flag as STINGRAY? with caveat.
@@ -169,6 +214,7 @@ RESOURCES.md       ← learning resources for contributors
 ROADMAP.md         ← development phases and status (partially out of date)
 DETECTION.md       ← detection expansion plan (research + implementation)
 DETECTION_STATUS.md ← what's implemented vs pending from DETECTION.md
+CAMERA_DETECTION.md ← non-Flock camera detection plan (OUI category-aware cap)
 FIXES.md           ← walk test issues found June 21 + fixes
 HARDWARE_TEST.md   ← hardware test results June 21
 STINGRAY.md        ← Stingray/IMSI catcher detection plan
