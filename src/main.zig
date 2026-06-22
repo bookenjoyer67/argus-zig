@@ -1004,7 +1004,7 @@ fn drawSummary() void {
 
     oledClear();
     drawPageNum(0);
-    oledDrawStr(0, 0, "ARGUS TRACKER");
+    oledDrawStr(0, 0, "ARGUS");
     oledDrawStr(0, 18, "ALPR:");
     oledDrawInt(48, 18, @intCast(alpr_count));
     oledDrawStr(78, 18, "DRN:");
@@ -1203,7 +1203,7 @@ fn drawSystem() void {
     oledDrawStr(0, 0, "SYSTEM");
 
     // Free heap (simplified — ESP-IDF provides this)
-    oledDrawStr(0, 14, "Heap: ~300K");
+    oledDrawStr(0, 14, "Firmware: v1.0");
     oledDrawStr(0, 24, "Flash: 3MB app");
     // GPS info
     if (gps_fix) {
@@ -1586,7 +1586,7 @@ export fn zig_main() callconv(.c) void {
         // Brief flash every 3 seconds to show the device is alive.
         // 10ms on, then off. Uses ~0.003% duty cycle, negligible power.
 
-        if (tick_ms % 3000 == 0) {
+        if (tick_ms % 1500 == 0) {
             ledOn();
             delayMs(10);
             ledOff();

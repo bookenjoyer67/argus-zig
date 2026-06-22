@@ -35,6 +35,27 @@ ec:1b:bd
 a4:cf:12
 82:6b:f2
 
+# Additional Flock Safety (newer deployments)
+70:f0:88
+e0:cb:bc
+
+# Amazon Ring / Blink cameras
+74:c2:46
+40:b4:cd
+68:54:fd
+
+# Google Nest cameras
+38:94:ed
+3c:a0:67
+d8:0d:17
+
+# Arlo cameras
+00:24:e4
+48:e2:44
+
+# Wyze cameras
+7c:c7:08
+
 # Drone Remote ID (ASTM F3411) — WiFi OUI matching
 # DJI
 60:60:1f
