@@ -1,9 +1,21 @@
-# Argus — Surveillance Tracker Scanner
+<div align="center">
 
-Passive BLE/WiFi surveillance detection for the Heltec WiFi LoRa 32 V3.
+<img src="assets/argus-banner.svg" alt="Argus — Surveillance Tracker Scanner" width="100%">
+
+![License](https://img.shields.io/badge/license-AGPLv3-1eff9d?style=for-the-badge&labelColor=04060d)
+![Platform](https://img.shields.io/badge/platform-ESP32--S3-e8c24a?style=for-the-badge&labelColor=04060d)
+![Zig](https://img.shields.io/badge/Zig-0.16-1eff9d?style=for-the-badge&labelColor=04060d)
+![Cloud](https://img.shields.io/badge/cloud-none-9d5cff?style=for-the-badge&labelColor=04060d)
+![Scanning](https://img.shields.io/badge/scanning-passive-3a7bff?style=for-the-badge&labelColor=04060d)
+
+**Passive BLE/WiFi surveillance detection for the Heltec WiFi LoRa 32 V3.**
 Written in Zig + ESP-IDF. Pocket-sized. Zero external parts needed.
 
-## What it detects
+</div>
+
+![](assets/divider.svg)
+
+## ✦ What it detects
 
 - **Flock Safety ALPR cameras** — 33 MAC OUI prefixes, SSID format validation
 - **Raven gunshot sensors** — 8 BLE service UUIDs, firmware version classification
@@ -17,7 +29,9 @@ Written in Zig + ESP-IDF. Pocket-sized. Zero external parts needed.
 Alerts via buzzer chirp and LED blink. OLED shows device type, RSSI proximity,
 distance estimate, and confidence score. All detections logged to SPIFFS.
 
-## Why this exists
+![](assets/divider.svg)
+
+## ✦ Why this exists
 
 Flock Safety operates the largest private surveillance network in the US.
 Over 5,000 municipalities have sold their streets to automated license plate
@@ -28,7 +42,9 @@ surveillance mesh. AirTags are abused for stalking.
 This device tells you when you're being watched. It costs $15 in parts.
 No subscription. No cloud. No phone required.
 
-## Hardware
+![](assets/divider.svg)
+
+## ✦ Hardware
 
 | Part | Required? | Cost |
 |------|-----------|------|
@@ -39,7 +55,9 @@ No subscription. No cloud. No phone required.
 
 Zero external parts for basic operation — onboard LED blinks on detection.
 
-## How it works
+![](assets/divider.svg)
+
+## ✦ How it works
 
 C modules (ESP-IDF) handle all hardware — NimBLE, WiFi stack, SX1262 LoRa,
 SSD1306 I2C, SPIFFS, GPS UART, ADC. Zig modules handle all logic — BLE/WiFi
@@ -58,7 +76,9 @@ main/*.c          — Hardware drivers (ble, wifi, lora, spiffs, gps, oled)
 src/ouis.txt      — 73 MAC OUI prefixes (compile-time parsed)
 ```
 
-## Binary size
+![](assets/divider.svg)
+
+## ✦ Binary size
 
 ~360 KB with all detection modules, scoring, OLED driver, and LoRa mesh.
 Compares to ~530 KB for BLE + OLED alone in the C++ Arduino equivalent.
@@ -69,13 +89,17 @@ Savings from:
 - No Arduino framework overhead
 - ReleaseSafe optimization (no panic strings, no monomorphization bloat)
 
-## License
+![](assets/divider.svg)
+
+## ✦ License
 
 AGPLv3.
 You can use it, modify it, and sell devices running it,
 as long as you share your changes under the same license.
 
-## Credits
+![](assets/divider.svg)
+
+## ✦ Credits
 
 - **@NitekryDPaul** — WiFi promiscuous detection research, 30-OUI Flock Safety target list, addr1-receiver technique
 - **Michael / DeFlockJoplin** — Wildcard-probe-request signature, 31st OUI (82:6b:f2)
@@ -84,7 +108,9 @@ as long as you share your changes under the same license.
 - **kassane** — Zig ESP-IDF integration, zig-espressif-bootstrap toolchain
 - **recamshak** — esp32-baremetal-zig (SVD-generated register definitions)
 
-## Related projects
+![](assets/divider.svg)
+
+## ✦ Related projects
 
 - [Flock-You](https://github.com/colonelpanichacks/flock-you) — C++ Flock Safety detector (Seeed XIAO ESP32-S3)
 - [Flock-Detector 3.0](https://github.com/zmattmanz/flock-detection) — C++ multi-method confidence scoring
