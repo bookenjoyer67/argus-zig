@@ -55,7 +55,7 @@ pub const api = @import("api.zig");
 
 /// Single source of truth for the firmware version (shown on the OLED System
 /// page and reported by the JSON API). Bump this on each release.
-pub const FIRMWARE_VERSION = "1.1.0";
+pub const FIRMWARE_VERSION = "1.1.1";
 
 // Force the dashboard API exports (in the non-root api.zig) to be analyzed
 // and emitted into libargus.a — Zig only lazily analyzes imported files.
