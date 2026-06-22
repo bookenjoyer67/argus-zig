@@ -27,4 +27,10 @@ gh release create "$TAG" build/argus-merged.bin build/argus-zig.bin \
   --title "Argus $TAG" \
   --notes "Prebuilt firmware for the Heltec WiFi LoRa 32 V3 (ESP32-S3). Flash from a desktop Chrome/Edge browser at https://bookenjoyer67.github.io/argus-zig/web/flash.html"
 
-echo "=== Done. Pages will fetch argus-merged.bin on the next deploy. ==="
+# Deploy Pages from main (the github-pages environment rejects tag refs, so we
+# can't trigger off the release event). This pulls the new release assets into
+# web/firmware/ and writes version.json.
+echo "=== Triggering Pages deploy ==="
+gh workflow run pages.yml --ref main
+
+echo "=== Done. Pages will publish the new binaries + version.json shortly. ==="
