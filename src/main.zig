@@ -237,14 +237,15 @@ fn matchOui(mac: [6]u8) bool {
 const MAX_TRACKERS = 64;
 
 /// Detection method flags (bitmask) — each method contributes to confidence score.
-const METHOD_OUI: u8         = 1 << 0; // MAC OUI match (40 pts)
-const METHOD_SSID_PREFIX: u8 = 1 << 1; // SSID starts with "Flock" (50 pts)
-const METHOD_SSID_FLOCK: u8  = 1 << 2; // SSID "Flock-XXXX" full format (65 pts)
-const METHOD_BLE_NAME: u8    = 1 << 3; // BLE advert contains device name (45 pts)
-const METHOD_MANUF: u8       = 1 << 4; // Manufacturer 0x09C8 / 0x0075 (60 pts)
-const METHOD_FINDMY: u8      = 1 << 5; // Apple Find My 0x4C00+type 0x12 (70 pts)
-const METHOD_RAVEN: u8       = 1 << 6; // Raven gunshot sensor UUID (70 pts)
-const METHOD_TILE: u8        = 1 << 7; // Tile 0xFEED service UUID (45 pts)
+const METHOD_OUI: u16         = 1 << 0; // MAC OUI match (40 pts)
+const METHOD_SSID_PREFIX: u16 = 1 << 1; // SSID starts with "Flock" (50 pts)
+const METHOD_SSID_FLOCK: u16  = 1 << 2; // SSID "Flock-XXXX" full format (65 pts)
+const METHOD_BLE_NAME: u16    = 1 << 3; // BLE advert contains device name (45 pts)
+const METHOD_MANUF: u16       = 1 << 4; // Manufacturer 0x09C8 / 0x0075 (60 pts)
+const METHOD_FINDMY: u16      = 1 << 5; // Apple Find My 0x4C00+type 0x12 (70 pts)
+const METHOD_RAVEN: u16       = 1 << 6; // Raven gunshot sensor UUID (70 pts)
+const METHOD_TILE: u16        = 1 << 7; // Tile 0xFEED service UUID (45 pts)
+const METHOD_DRONE: u16       = 1 << 8; // Drone Remote ID (BLE 0xFFFA or OUI) (60 pts)
 
 /// Known tracker types. Stored as u8 in the table.
 const TrackerType = enum(u8) {
@@ -254,6 +255,7 @@ const TrackerType = enum(u8) {
     findmy,
     flock_camera,
     wifi_device,
+    drone,          // Drone Remote ID (ASTM F3411)
     unknown,
     _,
 };
@@ -264,7 +266,7 @@ const TrackerEntry = struct {
     rssi: i8,
     last_seen: u32,
     score: u8,       // 0-100 confidence score
-    methods: u8,     // bitmask of detection methods
+    methods: u16,     // bitmask of detection methods
 };
 
 var trackers: [MAX_TRACKERS]TrackerEntry = undefined;
@@ -274,12 +276,12 @@ var tick_ms: u32 = 0;
 /// Classification result from BLE or WiFi scanners.
 const ClassResult = struct {
     kind: TrackerType,
-    methods: u8,
+    methods: u16,
 };
 
 /// Compute confidence score from method flags, RSSI, and MAC type.
 /// Bonuses: multi-method corroboration, strong signal, static address.
-fn computeScore(methods: u8, rssi: i8, mac: [6]u8) u8 {
+fn computeScore(methods: u16, rssi: i8, mac: [6]u8) u8 {
     var score: u32 = 0;
     var count: u32 = 0;
 
@@ -291,6 +293,7 @@ fn computeScore(methods: u8, rssi: i8, mac: [6]u8) u8 {
     if (methods & METHOD_FINDMY != 0)      { score += 70; count += 1; }
     if (methods & METHOD_RAVEN != 0)       { score += 70; count += 1; }
     if (methods & METHOD_TILE != 0)        { score += 45; count += 1; }
+    if (methods & METHOD_DRONE != 0)       { score += 60; count += 1; }
 
     if (count >= 2) score += 20;     // multi-method corroboration
     if (rssi > -50) score += 10;     // strong signal
@@ -313,7 +316,7 @@ fn scoreLevel(score: u8) []const u8 {
 
 /// Parse BLE advertisement data and classify the tracker type + method flags.
 fn classifyBle(adv_data: []const u8) ClassResult {
-    var methods: u8 = 0;
+    var methods: u16 = 0;
     var kind: TrackerType = .unknown;
 
     var pos: usize = 0;
@@ -348,6 +351,10 @@ fn classifyBle(adv_data: []const u8) ClassResult {
                     kind = .tile;
                     methods |= METHOD_TILE;
                 }
+                if (uuid == 0xFFFA) {
+                    kind = .drone;
+                    methods |= METHOD_DRONE;
+                }
             }
         }
 
@@ -365,7 +372,7 @@ fn classifyBle(adv_data: []const u8) ClassResult {
 /// Classify a WiFi detection based on OUI match and SSID pattern.
 fn classifyWiFi(mac: [6]u8, ssid: []const u8) ClassResult {
     const oui_match = matchOui(mac);
-    var methods: u8 = 0;
+    var methods: u16 = 0;
     var kind: TrackerType = .unknown;
 
     if (oui_match) methods |= METHOD_OUI;
@@ -954,6 +961,7 @@ fn kindStr(kind: TrackerType) []const u8 {
         .findmy => "FMY",
         .flock_camera => "FLK",
         .wifi_device => "WIF",
+        .drone => "DRN",
         .unknown => "???",
         else => "???",
     };
@@ -969,9 +977,11 @@ fn ageSec(last: u32) u32 {
 fn drawSummary() void {
     var alpr_count: u32 = 0;
     var ble_count: u32 = 0;
+    var drone_count: u32 = 0;
     for (0..tracker_count) |i| {
         switch (trackers[i].kind) {
             .flock_camera, .wifi_device => alpr_count += 1,
+            .drone => drone_count += 1,
             else => ble_count += 1,
         }
     }
@@ -981,11 +991,13 @@ fn drawSummary() void {
     oledDrawStr(0, 0, "ARGUS TRACKER");
     oledDrawStr(0, 18, "ALPR:");
     oledDrawInt(48, 18, @intCast(alpr_count));
-    oledDrawStr(78, 18, "BLE:");
-    oledDrawInt(108, 18, @intCast(ble_count));
-    oledDrawStr(0, 28, "OUI:");
-    oledDrawInt(48, 28, @intCast(KNOWN_OUIS_COUNT));
-    drawBatteryBar(0, 38, 40, 8);
+    oledDrawStr(78, 18, "DRN:");
+    oledDrawInt(108, 18, @intCast(drone_count));
+    oledDrawStr(0, 28, "BLE:");
+    oledDrawInt(48, 28, @intCast(ble_count));
+    oledDrawStr(0, 36, "OUI:");
+    oledDrawInt(48, 36, @intCast(KNOWN_OUIS_COUNT));
+    drawBatteryBar(0, 44, 40, 8);
     // GPS status
     var gps_buf: [24]u8 = undefined;
     if (gps_fix) {

@@ -34,3 +34,18 @@ ec:1b:bd
 48:27:ea
 a4:cf:12
 82:6b:f2
+
+# Drone Remote ID (ASTM F3411) — WiFi OUI matching
+# DJI
+60:60:1f
+e4:7f:b2
+34:d2:62
+# Autel Robotics
+e8:1f:84
+# Skydio
+58:ed:0e
+# Parrot
+a0:14:3d
+90:03:b7
+# Yuneec
+c8:8e:db
