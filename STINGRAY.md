@@ -1,4 +1,4 @@
-# Stingray / IMSI Catcher Detection — Implementation Plan
+# Stingray / IMSI Catcher Detection — Implemented ✓
 
 Detects probable Stingray events via WiFi probe request side-channel analysis.
 Indirect detection — the Heltec has no cellular modem and cannot see the fake
@@ -6,7 +6,7 @@ cell tower directly. It watches for the signature side effect: a burst of
 carrier SSID probes from many phones in a short time window, which happens
 when a Stingray forces phones off the cellular network.
 
-## How it works
+**Status: Implemented.** See `src/scanner.zig` lines 52-400.
 
 ```
 Normal operation:

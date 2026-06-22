@@ -66,11 +66,15 @@ Last updated: June 22, 2026
 - detectRssiTrend() identifies rise-peak-fall pattern
 - +10 pts bonus for stationary device signature
 
-### IMSI Catcher / Stingray Research
+### IMSI Catcher / Stingray Detection ✓
 - Carrier probe SSID counting: attwifi, VerizonWiFi, xfinitywifi, T-Mobile, etc.
-- Burst detection algorithm planned (see STINGRAY.md)
-- Stingray alert flag + display on summary and surveillance pages
-- Probabilistic detection — flagged as STINGRAY? with caveat
+- 5-second bucket rotation with rolling 60-second baseline
+- Spike detection: bucket exceeds 3x average, confirmed by second spike within 30s
+- STINGRAY? alert flag with auto-clear after 5 minutes
+- Display on summary page banner and surveillance page row
+- CSV event logging
+- Probabilistic — indirect detection, flagged with caveat
+- See STINGRAY.md for algorithm details
 
 ### Display / UX
 - 7 OLED pages with 500ms live refresh on all pages

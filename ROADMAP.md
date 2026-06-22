@@ -87,7 +87,7 @@ Message type parsing (Basic ID, Location, Self-ID).
 
 ### Medium term
 
-- [ ] Stingray burst detector implementation (see STINGRAY.md)
+- [x] Stingray burst detector implementation (see STINGRAY.md)
 - [ ] WiFi channel coverage 1-13 with adaptive dwell
 - [ ] Stealth mode (double-press toggle, OLED off, silent scanning)
 - [ ] UX enhancements (threat-level LED patterns, boot sequence, sleep/wake)
