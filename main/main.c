@@ -35,6 +35,9 @@ extern int ble_scan_init(void);
 // Defined in wifi.c
 extern int wifi_scan_init(void);
 
+// Defined in spiffs.c
+extern int spiffs_init_storage(void);
+
 // ================================================================
 // OLED I2C helpers — called from Zig via extern fn
 // ================================================================
@@ -150,7 +153,6 @@ int gpio_write(int pin, int level) {
     return gpio_set_level(pin, level);
 }
 
-// Read GPIO input level. Returns 0 (LOW) or 1 (HIGH).
 int gpio_read(int pin) {
     return gpio_get_level(pin);
 }
@@ -228,6 +230,10 @@ void app_main(void) {
     // Results are pushed to ring buffers, polled from zig_main().
     ble_scan_init();
     wifi_scan_init();
+
+    // --- Mount SPIFFS for detection logging ---
+    // CSV log at /spiffs/detections.csv, session counter at /spiffs/session.dat
+    spiffs_init_storage();
 
     // --- Hand off to Zig ---
     //

@@ -108,6 +108,11 @@ extern fn wifi_get_frame_count() u32;
 // Returns battery voltage in millivolts (e.g. 4100 = 4.1V).
 extern fn battery_read_mv() i32;
 
+// SPIFFS persistence — CSV detection log on flash storage
+extern fn spiffs_append_line(path: [*:0]const u8, line: [*:0]const u8) i32;
+extern fn spiffs_read_file(path: [*:0]const u8, buf: [*]u8, max_len: u32) i32;
+extern fn spiffs_write_file(path: [*:0]const u8, data: [*]const u8, len: u32) i32;
+
 // ================================================================
 // HELTEC V3 PIN DEFINITIONS
 // ================================================================
@@ -751,6 +756,52 @@ fn oledUpdate() void {
 var current_page: u8 = 0;
 const NUM_PAGES: u8 = 7;
 
+/// Session counter — total unique detections since first boot.
+/// Saved to /spiffs/session.dat and restored on boot.
+var session_total: u32 = 0;
+
+/// Persist session counter to SPIFFS.
+fn saveSession() void {
+    var buf: [16]u8 = undefined;
+    const s = std.fmt.bufPrint(&buf, "{d}", .{session_total}) catch return;
+    _ = spiffs_write_file("session.dat", s.ptr, s.len);
+}
+
+/// Restore session counter from SPIFFS on boot.
+fn restoreSession() void {
+    var buf: [16]u8 = undefined;
+    const n = spiffs_read_file("session.dat", &buf, buf.len);
+    if (n > 0) {
+        session_total = std.fmt.parseInt(u32, buf[0..@intCast(n)], 10) catch 0;
+    }
+}
+
+/// Append a detection event to the CSV log.
+/// Looks up the tracker entry to get the accumulated score.
+fn logCsv(mac: [6]u8, rssi: i8) void {
+    // Find the tracker entry for this MAC to get accumulated score
+    for (0..tracker_count) |i| {
+        if (std.mem.eql(u8, &trackers[i].mac, &mac)) {
+            const ks = kindStr(trackers[i].kind);
+            const methods = trackers[i].methods;
+            const score = trackers[i].score;
+
+            var line: [80]u8 = undefined;
+            const s = std.fmt.bufPrint(&line, "{d},{s},{X:0>2}{X:0>2}{X:0>2}{X:0>2}{X:0>2}{X:0>2},{d},{d},{X:0>2}\n", .{
+                tick_ms, ks,
+                mac[0], mac[1], mac[2], mac[3], mac[4], mac[5],
+                rssi, score, methods,
+            }) catch return;
+            line[s.len] = 0; // null-terminate for C
+            _ = spiffs_append_line("detections.csv", line[0..s.len :0].ptr);
+            return;
+        }
+    }
+}
+
+/// Dump CSV log to serial (called on long press). Entirely in C — see spiffs.c.
+extern fn spiffs_csv_export() void;
+
 /// Draw page number indicator top-right (e.g. "1/7").
 fn drawPageNum(page: u8) void {
     var buf: [4]u8 = undefined;
@@ -1132,6 +1183,9 @@ export fn zig_main() callconv(.c) void {
         drawPage();
     }
 
+    // Restore session counter from SPIFFS
+    restoreSession();
+
     // ================================================================
     // MAIN LOOP
     // ================================================================
@@ -1168,6 +1222,9 @@ export fn zig_main() callconv(.c) void {
 
             if (is_new) {
                 had_new = true;
+                 session_total += 1;
+                saveSession();
+                logCsv(ble_addr, ble_rssi);
             }
 
             // Yield every 8 events to avoid watchdog timeout
@@ -1218,6 +1275,9 @@ export fn zig_main() callconv(.c) void {
 
             if (is_new) {
                 had_new = true;
+                session_total += 1;
+                saveSession();
+                logCsv(wifi_addr, wifi_rssi);
             }
 
             // Yield every 4 events to avoid watchdog timeout
@@ -1244,13 +1304,28 @@ export fn zig_main() callconv(.c) void {
         if (buttonPressed()) {
             delayMs(50);
             if (buttonPressed()) {
-                // Short press: cycle to next page and chirp
-                current_page = (current_page + 1) % NUM_PAGES;
-                buzzerTone(1500, 40); // short click feedback
+                // Check for long press (>1 second hold)
+                var hold_ms: u32 = 50;
+                while (buttonPressed() and hold_ms < 1200) {
+                    delayMs(50);
+                    hold_ms += 50;
+                }
 
-                // Wait for release to avoid re-triggering
-                while (buttonPressed()) {
-                    delayMs(10);
+                if (hold_ms >= 1200) {
+                    // Long press — LED blinks, then CSV dump over serial
+                    ledOn();  delayMs(50); ledOff();
+                    spiffs_csv_export();
+                    // Wait for release
+                    while (buttonPressed()) {
+                        delayMs(10);
+                    }
+                } else {
+                    // Short press: cycle to next page
+                    current_page = (current_page + 1) % NUM_PAGES;
+                    delayMs(40); // buzzer removed — just a short delay for tactile feel
+                    while (buttonPressed()) {
+                        delayMs(10);
+                    }
                 }
 
                 drawPage();
