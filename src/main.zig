@@ -231,48 +231,86 @@ fn matchOui(mac: [6]u8) bool {
 
 const MAX_TRACKERS = 64;
 
+/// Detection method flags (bitmask) — each method contributes to confidence score.
+const METHOD_OUI: u8         = 1 << 0; // MAC OUI match (40 pts)
+const METHOD_SSID_PREFIX: u8 = 1 << 1; // SSID starts with "Flock" (50 pts)
+const METHOD_SSID_FLOCK: u8  = 1 << 2; // SSID "Flock-XXXX" full format (65 pts)
+const METHOD_BLE_NAME: u8    = 1 << 3; // BLE advert contains device name (45 pts)
+const METHOD_MANUF: u8       = 1 << 4; // Manufacturer 0x09C8 / 0x0075 (60 pts)
+const METHOD_FINDMY: u8      = 1 << 5; // Apple Find My 0x4C00+type 0x12 (70 pts)
+const METHOD_RAVEN: u8       = 1 << 6; // Raven gunshot sensor UUID (70 pts)
+const METHOD_TILE: u8        = 1 << 7; // Tile 0xFEED service UUID (45 pts)
+
 /// Known tracker types. Stored as u8 in the table.
 const TrackerType = enum(u8) {
-    airtag,        // Apple AirTag (Find My protocol, 0x4C00 type 0x12)
-    tile,          // Tile (service UUID 0xFEED)
-    samsung,       // Samsung SmartTag (manufacturer ID 0x0075)
-    findmy,        // Generic Apple Find My device (couldn't narrow)
-    flock_camera,  // Flock Safety ALPR camera (OUI match + SSID pattern)
-    wifi_device,   // WiFi device with known surveillance OUI
-    unknown,       // Detected but unclassified
+    airtag,
+    tile,
+    samsung,
+    findmy,
+    flock_camera,
+    wifi_device,
+    unknown,
     _,
 };
 
 const TrackerEntry = struct {
     mac: [6]u8,
     kind: TrackerType,
-    rssi: i8,         // dBm, -128 to 0
-    last_seen: u32,   // tick_ms when last observed
+    rssi: i8,
+    last_seen: u32,
+    score: u8,       // 0-100 confidence score
+    methods: u8,     // bitmask of detection methods
 };
 
 var trackers: [MAX_TRACKERS]TrackerEntry = undefined;
 var tracker_count: usize = 0;
-var tick_ms: u32 = 0; // monotonic millisecond counter, wraps after ~49 days
+var tick_ms: u32 = 0;
+
+/// Classification result from BLE or WiFi scanners.
+const ClassResult = struct {
+    kind: TrackerType,
+    methods: u8,
+};
+
+/// Compute confidence score from method flags, RSSI, and MAC type.
+/// Bonuses: multi-method corroboration, strong signal, static address.
+fn computeScore(methods: u8, rssi: i8, mac: [6]u8) u8 {
+    var score: u32 = 0;
+    var count: u32 = 0;
+
+    if (methods & METHOD_OUI != 0)         { score += 40; count += 1; }
+    if (methods & METHOD_SSID_PREFIX != 0) { score += 50; count += 1; }
+    if (methods & METHOD_SSID_FLOCK != 0)  { score += 65; count += 1; }
+    if (methods & METHOD_BLE_NAME != 0)    { score += 45; count += 1; }
+    if (methods & METHOD_MANUF != 0)       { score += 60; count += 1; }
+    if (methods & METHOD_FINDMY != 0)      { score += 70; count += 1; }
+    if (methods & METHOD_RAVEN != 0)       { score += 70; count += 1; }
+    if (methods & METHOD_TILE != 0)        { score += 45; count += 1; }
+
+    if (count >= 2) score += 20;     // multi-method corroboration
+    if (rssi > -50) score += 10;     // strong signal
+    if ((mac[0] & 0x03) == 0) score += 10; // static MAC (not multicast, not randomized)
+
+    return if (score > 100) 100 else @intCast(score);
+}
+
+/// Confidence level label for display.
+fn scoreLevel(score: u8) []const u8 {
+    if (score >= 85) return "CERT";
+    if (score >= 70) return "HIGH";
+    if (score >= 40) return "MED ";
+    return "LOW ";
+}
 
 // ================================================================
 // BLE ADVERTISEMENT PARSER
 // ================================================================
-//
-// BLE advertisement data uses TLV format:
-//   [length:1][type:1][value: length-1]...
-//
-// Key AD types:
-//   0xFF = Manufacturer Specific Data (2-byte company ID LE + payload)
-//   0x02,0x03 = 16-bit Service UUIDs (incomplete/complete list)
-//   0x06,0x07 = 128-bit Service UUIDs
-//
-// Tracker identification:
-//   Apple Find My:  AD 0xFF, company 0x004C, payload byte 0 == 0x12
-//   Tile:           AD 0x03 or 0x02, UUID 0xFEED
-//   Samsung:        AD 0xFF, company 0x0075
 
-/// Parse BLE advertisement data and classify the tracker type.
-fn classifyBle(adv_data: []const u8) TrackerType {
+/// Parse BLE advertisement data and classify the tracker type + method flags.
+fn classifyBle(adv_data: []const u8) ClassResult {
+    var methods: u8 = 0;
+    var kind: TrackerType = .unknown;
+
     var pos: usize = 0;
     while (pos + 1 < adv_data.len) {
         const len = adv_data[pos];
@@ -282,72 +320,101 @@ fn classifyBle(adv_data: []const u8) TrackerType {
         const payload = adv_data[pos + 2 .. pos + 1 + len];
 
         if (ad_type == 0xFF and payload.len >= 3) {
-            // Manufacturer Specific Data
             const company: u16 = @as(u16, payload[0]) | (@as(u16, payload[1]) << 8);
             if (company == 0x004C and payload.len >= 3 and payload[2] == 0x12) {
-                return .airtag;
+                kind = .airtag;
+                methods |= METHOD_FINDMY;
             }
             if (company == 0x0075) {
-                return .samsung;
+                kind = .samsung;
+                methods |= METHOD_MANUF;
+            }
+            if (company == 0x09C8) {
+                methods |= METHOD_MANUF;
+                if (kind == .unknown) kind = .unknown;
             }
         }
 
         if ((ad_type == 0x02 or ad_type == 0x03) and payload.len >= 2) {
-            // 16-bit Service UUID (incomplete or complete list)
-            var uuid_pos: usize = 0;
-            while (uuid_pos + 1 < payload.len) : (uuid_pos += 2) {
-                const uuid: u16 = @as(u16, payload[uuid_pos]) | (@as(u16, payload[uuid_pos + 1]) << 8);
-                if (uuid == 0xFEED) return .tile;
+            var u: usize = 0;
+            while (u + 1 < payload.len) : (u += 2) {
+                const uuid: u16 = @as(u16, payload[u]) | (@as(u16, payload[u + 1]) << 8);
+                if (uuid == 0xFEED) {
+                    kind = .tile;
+                    methods |= METHOD_TILE;
+                }
             }
+        }
+
+        if (ad_type == 0x08 or ad_type == 0x09) {
+            // Complete or shortened local name
+            if (payload.len > 0) methods |= METHOD_BLE_NAME;
         }
 
         pos += 1 + len;
     }
-    return .unknown;
+
+    return .{ .kind = kind, .methods = methods };
 }
 
 /// Classify a WiFi detection based on OUI match and SSID pattern.
-/// Flock Safety cameras probe for networks named "Flock-XXXX" and
-/// have MAC OUIs matching the known surveillance database.
-fn classifyWiFi(mac: [6]u8, ssid: []const u8) TrackerType {
+fn classifyWiFi(mac: [6]u8, ssid: []const u8) ClassResult {
     const oui_match = matchOui(mac);
+    var methods: u8 = 0;
+    var kind: TrackerType = .unknown;
 
-    const ssid_flock = blk: {
-        if (ssid.len < 5) break :blk false;
+    if (oui_match) methods |= METHOD_OUI;
+
+    if (ssid.len >= 5) {
         const prefix = [5]u8{ 'F', 'L', 'O', 'C', 'K' };
-        break :blk std.mem.eql(u8, ssid[0..5], &prefix);
-    };
-
-    if (oui_match and ssid_flock) return .flock_camera;
-    if (oui_match) return .wifi_device;
-    return .unknown;
-}
-
-/// Add or update a tracker entry for the given MAC address.
-/// If the MAC is already in the table, update RSSI and last_seen.
-/// Otherwise, add a new entry (evict oldest if full).
-fn trackBle(mac: [6]u8, kind: TrackerType, rssi: i8) void {
-    // Check if already tracked
-    for (0..tracker_count) |i| {
-        if (std.mem.eql(u8, &trackers[i].mac, &mac)) {
-            trackers[i].rssi = rssi;
-            trackers[i].last_seen = tick_ms;
-            if (kind != .unknown) trackers[i].kind = kind;
-            return;
+        if (std.mem.eql(u8, ssid[0..5], &prefix)) {
+            methods |= METHOD_SSID_PREFIX;
+            // Check full Flock-XXXX format: 10 chars total (Flock-XXXX)
+            if (ssid.len == 10 and ssid[5] == '-') {
+                methods |= METHOD_SSID_FLOCK;
+            }
         }
     }
 
-    // New tracker — add to table
+    if (oui_match and (methods & METHOD_SSID_PREFIX != 0)) {
+        kind = .flock_camera;
+    } else if (oui_match) {
+        kind = .wifi_device;
+    }
+
+    return .{ .kind = kind, .methods = methods };
+}
+
+/// Add or update a tracker entry. Accumulates detection methods across
+/// observations, keeps the best RSSI, and recomputes confidence score.
+/// Returns true if this is a new tracker (for alert triggering).
+fn trackDevice(mac: [6]u8, result: ClassResult, rssi: i8) bool {
+    for (0..tracker_count) |i| {
+        if (std.mem.eql(u8, &trackers[i].mac, &mac)) {
+            trackers[i].methods |= result.methods;
+            if (result.kind != .unknown) trackers[i].kind = result.kind;
+            if (rssi > trackers[i].rssi) trackers[i].rssi = rssi;
+            trackers[i].last_seen = tick_ms;
+            trackers[i].score = computeScore(trackers[i].methods, trackers[i].rssi, mac);
+            return false;
+        }
+    }
+
+    // New tracker
+    const score = computeScore(result.methods, rssi, mac);
+    const entry = TrackerEntry{
+        .mac = mac,
+        .kind = result.kind,
+        .rssi = rssi,
+        .last_seen = tick_ms,
+        .score = score,
+        .methods = result.methods,
+    };
+
     if (tracker_count < MAX_TRACKERS) {
-        trackers[tracker_count] = .{
-            .mac = mac,
-            .kind = kind,
-            .rssi = rssi,
-            .last_seen = tick_ms,
-        };
+        trackers[tracker_count] = entry;
         tracker_count += 1;
     } else {
-        // Evict oldest entry
         var oldest_idx: usize = 0;
         var oldest_time: u32 = trackers[0].last_seen;
         for (1..MAX_TRACKERS) |i| {
@@ -356,13 +423,9 @@ fn trackBle(mac: [6]u8, kind: TrackerType, rssi: i8) void {
                 oldest_idx = i;
             }
         }
-        trackers[oldest_idx] = .{
-            .mac = mac,
-            .kind = kind,
-            .rssi = rssi,
-            .last_seen = tick_ms,
-        };
+        trackers[oldest_idx] = entry;
     }
+    return true;
 }
 
 // ================================================================
@@ -771,10 +834,10 @@ fn drawThreats() void {
         const y: u8 = 10 + row * 8;
         var buf: [32]u8 = undefined;
         const ks = kindStr(trackers[i].kind);
-        _ = std.fmt.bufPrint(&buf, "{X:0<2}:{X:0<2}:{X:0<2}:{X:0<2}:{X:0<2}:{X:0<2} {s} {d}", .{
-            trackers[i].mac[0], trackers[i].mac[1], trackers[i].mac[2],
-            trackers[i].mac[3], trackers[i].mac[4], trackers[i].mac[5],
-            ks, trackers[i].rssi,
+        const s = scoreLevel(trackers[i].score);
+        _ = std.fmt.bufPrint(&buf, "{X:0<2}:{X:0<2} {s}{d} {s}", .{
+            trackers[i].mac[0], trackers[i].mac[1],
+            ks, trackers[i].rssi, s,
         }) catch continue;
         oledDrawStr(0, y, &buf);
         row += 1;
@@ -812,9 +875,10 @@ fn drawProximity() void {
     oledDrawStr(0, 12, mac_str);
     oledDrawStr(0, 22, kindStr(t.kind));
 
-    oledDrawStr(0, 34, "RSSI:");
-    oledDrawInt(42, 34, t.rssi);
-    oledDrawStr(66, 34, "dBm");
+    // Score badge
+    var score_buf: [16]u8 = undefined;
+    _ = std.fmt.bufPrint(&score_buf, "SC: {d} {s}", .{ t.score, scoreLevel(t.score) }) catch {};
+    oledDrawStr(0, 34, &score_buf);
 
     // RSSI bar: -100 = 0%, -20 = 100%
     const rssi_pct: u8 = if (t.rssi < -100) 0 else if (t.rssi > -20) 100 else blk: {
@@ -963,11 +1027,28 @@ fn drawPage() void {
 // this is acceptable. For longer patterns, use a non-blocking
 // state machine that advances on each loop() iteration.
 
-/// Two ascending chirps — identical to Flock-You's alert signature.
-/// Total duration: ~110ms.
-fn alertNew() void {
-    buzzerTone(2000, 55); // low chirp
-    buzzerTone(2800, 55); // high chirp
+/// Alert pattern by confidence score.
+/// 0-39: silent.  40-69: single medium beep.
+/// 70-84: three fast beeps.  85+: five rapid beeps (CERTAIN).
+fn alertByScore(score: u8) void {
+    if (score < 40) return;
+    if (score < 70) {
+        buzzerTone(1500, 80); // MEDIUM — single beep
+        return;
+    }
+    if (score < 85) {
+        // HIGH — 3 fast beeps
+        buzzerTone(2000, 30);
+        buzzerTone(2000, 30);
+        buzzerTone(2000, 30);
+        return;
+    }
+    // CERTAIN — 5 rapid beeps
+    buzzerTone(2000, 30);
+    buzzerTone(2000, 30);
+    buzzerTone(2000, 30);
+    buzzerTone(2000, 30);
+    buzzerTone(2000, 30);
 }
 
 // ================================================================
@@ -1082,16 +1163,8 @@ export fn zig_main() callconv(.c) void {
         var poll_count: u32 = 0;
         while (ble_scan_poll(&ble_addr, &ble_rssi, &ble_adv_type, &ble_data, &ble_data_len) != 0) {
             poll_count += 1;
-            const kind = classifyBle(ble_data[0..ble_data_len]);
-            // Check if this MAC is already tracked
-            const is_new = blk: {
-                for (0..tracker_count) |i| {
-                    if (std.mem.eql(u8, &trackers[i].mac, &ble_addr)) break :blk false;
-                }
-                break :blk true;
-            };
-
-            trackBle(ble_addr, kind, ble_rssi);
+            const result = classifyBle(ble_data[0..ble_data_len]);
+            const is_new = trackDevice(ble_addr, result, ble_rssi);
 
             if (is_new) {
                 had_new = true;
@@ -1104,7 +1177,12 @@ export fn zig_main() callconv(.c) void {
         }
 
         if (had_new) {
-            alertNew();
+            if (current_page != 2) current_page = 2;
+            var best: u8 = 0;
+            for (0..tracker_count) |i| {
+                if (trackers[i].score > best) best = trackers[i].score;
+            }
+            alertByScore(best);
             drawPage();
         }
 
@@ -1127,8 +1205,8 @@ export fn zig_main() callconv(.c) void {
 
             // Skip unknown MACs — only track OUI matches or "Flock" SSIDs.
             // This avoids flooding the tracker table with every passing phone.
-            const kind = classifyWiFi(wifi_addr, wifi_ssid[0..wifi_ssid_len]);
-            if (kind == .unknown) {
+            const result = classifyWiFi(wifi_addr, wifi_ssid[0..wifi_ssid_len]);
+            if (result.kind == .unknown) {
                 // Yield periodically even when skipping
                 if (poll_count % 16 == 0) {
                     delayMs(5);
@@ -1136,14 +1214,7 @@ export fn zig_main() callconv(.c) void {
                 continue;
             }
 
-            const is_new = blk: {
-                for (0..tracker_count) |i| {
-                    if (std.mem.eql(u8, &trackers[i].mac, &wifi_addr)) break :blk false;
-                }
-                break :blk true;
-            };
-
-            trackBle(wifi_addr, kind, wifi_rssi);
+            const is_new = trackDevice(wifi_addr, result, wifi_rssi);
 
             if (is_new) {
                 had_new = true;
@@ -1156,11 +1227,12 @@ export fn zig_main() callconv(.c) void {
         }
 
         if (had_new) {
-            // Auto-switch to proximity gauge on new detection
-            if (current_page != 2) {
-                current_page = 2;
+            if (current_page != 2) current_page = 2;
+            var best: u8 = 0;
+            for (0..tracker_count) |i| {
+                if (trackers[i].score > best) best = trackers[i].score;
             }
-            alertNew();
+            alertByScore(best);
             drawPage();
         }
 
@@ -1174,7 +1246,7 @@ export fn zig_main() callconv(.c) void {
             if (buttonPressed()) {
                 // Short press: cycle to next page and chirp
                 current_page = (current_page + 1) % NUM_PAGES;
-                alertNew();
+                buzzerTone(1500, 40); // short click feedback
 
                 // Wait for release to avoid re-triggering
                 while (buttonPressed()) {
