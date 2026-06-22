@@ -163,7 +163,7 @@
     <span>Threat: <span id="threat" class="pill clear">clear</span></span>
     <span class="spacer"></span>
     <a href="/api/export/csv">Export CSV</a>
-    <button onclick="otaUpdate(this)">Update firmware</button>
+    <button id="ota-btn" onclick="otaUpdate(this)" style="display:none">Update firmware</button>
     <span id="ver" class="mono" style="opacity:.5">v?</span>
   </div>
 
@@ -362,6 +362,8 @@ async function pollStatus() {
     document.getElementById('uptime').textContent = fmtUptime(s.uptime_seconds);
     document.getElementById('batt').textContent = s.battery_pct + '%';
     document.getElementById('ver').textContent = 'v' + s.firmware_version;
+    runningVersion = s.firmware_version;
+    refreshOtaButton();
   } catch (e) {}
 }
 
@@ -417,6 +419,26 @@ async function pollMesh() {
   } catch (e) {}
 }
 
+// Show the Update button only when a newer firmware is published. The dashboard
+// is served by the device, so version.json is fetched cross-origin from Pages
+// (which sends Access-Control-Allow-Origin: *).
+const VERSION_URL = 'https://bookenjoyer67.github.io/argus-zig/web/firmware/version.json';
+let latestVersion = null, runningVersion = null;
+function cmpVer(a, b){
+  const p = s => String(s).split('.').map(n => parseInt(n, 10) || 0);
+  const x = p(a), y = p(b);
+  for (let i = 0; i < 3; i++){ if ((x[i]||0) !== (y[i]||0)) return (x[i]||0) - (y[i]||0); }
+  return 0;
+}
+function refreshOtaButton(){
+  const show = latestVersion && runningVersion && cmpVer(latestVersion, runningVersion) > 0;
+  document.getElementById('ota-btn').style.display = show ? '' : 'none';
+}
+async function checkLatestVersion(){
+  try { const v = await (await fetch(VERSION_URL)).json(); latestVersion = v.version || null; } catch(_){}
+  refreshOtaButton();
+}
+
 async function otaUpdate(btn) {
   if (!confirm('Download and flash the latest firmware? The device will reboot.')) return;
   btn.disabled = true; btn.textContent = 'Updating…';
@@ -440,7 +462,7 @@ setInterval(pollStatus, POLL_STATUS_MS);
 setInterval(pollFeed, POLL_FEED_MS);
 setInterval(pollMesh, POLL_MESH_MS);
 setInterval(pollCameras, POLL_CAMERAS_MS);
-pollStatus(); pollFeed(); pollMesh(); pollConfig();
+pollStatus(); pollFeed(); pollMesh(); pollConfig(); checkLatestVersion();
 </script>
 </body>
 </html>
