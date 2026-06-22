@@ -48,7 +48,9 @@
 #define OP_READ_BUFFER            0x1E
 #define OP_GET_RX_BUFFER_STATUS   0x13
 #define OP_SET_TX_PARAMS          0x8E
+#define OP_SET_PA_CONFIG          0x95
 #define OP_GET_PACKET_STATUS      0x14
+#define OP_GET_STATUS             0xC0
 #define OP_CALIBRATE              0x89
 #define OP_SET_REGULATOR_MODE     0x96
 
@@ -81,13 +83,15 @@ static void lora_wait_busy(void) {
 
 // Single SPI transaction: send tx_data, optionally receive rx_data.
 // Returns 0 on success.
+// SPI transaction: send tx_len bytes, then optionally receive rx_len bytes.
+// Uses half-duplex mode (SPI_DEVICE_HALFDUPLEX) — SX1262 requires this.
 static int lora_spi_xfer(const uint8_t *tx_data, size_t tx_len,
                           uint8_t *rx_data, size_t rx_len) {
     lora_wait_busy();
 
     spi_transaction_t t = {0};
-    t.length = tx_len * 8;          // bits to send
-    t.rxlength = rx_len * 8;        // bits to receive
+    t.length = tx_len * 8;
+    t.rxlength = rx_len * 8;
     t.tx_buffer = tx_data;
     t.rx_buffer = rx_data;
 
@@ -104,12 +108,15 @@ static void lora_cmd(uint8_t opcode, const uint8_t *params, size_t plen) {
 }
 
 // Write command and read response bytes.
+// In half-duplex mode: send [opcode, NOP, params...], receive rx_data_len bytes.
+// Status bytes arrive during send phase (discarded), so data starts at rx[0].
 static void lora_cmd_read(uint8_t opcode, const uint8_t *params, size_t plen,
-                           uint8_t *rx, size_t rlen) {
-    uint8_t buf[1 + 32];
-    buf[0] = opcode;
-    if (plen > 0) memcpy(buf + 1, params, plen);
-    lora_spi_xfer(buf, 1 + plen, rx, rlen);
+                           uint8_t *rx, size_t rx_data_len) {
+    uint8_t tx[3 + 32]; // opcode + NOP + params
+    tx[0] = opcode;
+    tx[1] = 0x00;       // RADIO_NOP — gives chip a cycle to latch read address
+    if (plen > 0) memcpy(tx + 2, params, plen);
+    lora_spi_xfer(tx, 2 + plen, rx, rx_data_len);
 }
 
 // --- SX1262 commands ---
@@ -181,9 +188,9 @@ static void lora_set_tx_params(uint8_t power, uint8_t ramp_time) {
 }
 
 static uint16_t lora_get_irq_status(void) {
-    uint8_t rx[3];
+    uint8_t rx[3]; // [status, irq_hi, irq_lo]
     lora_cmd_read(OP_GET_IRQ_STATUS, NULL, 0, rx, 3);
-    return (rx[1] << 8) | rx[2];
+    return ((uint16_t)rx[1] << 8) | rx[2];
 }
 
 static void lora_clear_irq_status(uint16_t mask) {
@@ -191,17 +198,25 @@ static void lora_clear_irq_status(uint16_t mask) {
     lora_cmd(OP_CLEAR_IRQ_STATUS, p, 2);
 }
 
+static uint8_t lora_get_status(void) {
+    uint8_t rx[1]; // [chip_status]
+    lora_cmd_read(OP_GET_STATUS, NULL, 0, rx, 1);
+    return rx[0]; // bits 7-5: mode (1=STDBY_RC, 2=STDBY_XOSC, 3=FS, 4=RX, 5=TX)
+}
+
 static uint8_t lora_get_rx_buffer_status(uint8_t *payload_len, uint8_t *rx_ptr) {
-    uint8_t rx[3];
-    lora_cmd_read(OP_GET_RX_BUFFER_STATUS, NULL, 0, rx, 3);
-    *payload_len = rx[1];
-    *rx_ptr = rx[2];
-    return rx[0]; // status
+    uint8_t rx[4]; // [status, raw, plen, ptr]
+    lora_cmd_read(OP_GET_RX_BUFFER_STATUS, NULL, 0, rx, 4);
+    *payload_len = rx[2];
+    *rx_ptr = rx[3];
+    return rx[1]; // raw status
 }
 
 static void lora_read_buffer(uint8_t offset, uint8_t *data, uint8_t len) {
-    uint8_t p[2] = { offset, 0x00 }; // 0x00 = NOP after address
-    lora_cmd_read(OP_READ_BUFFER, p, 1, data, len);
+    uint8_t p = offset;
+    uint8_t rx[1 + 255]; // [status, data...]
+    lora_cmd_read(OP_READ_BUFFER, &p, 1, rx, len + 1);
+    memcpy(data, rx + 1, len);
 }
 
 static void lora_write_buffer(uint8_t offset, const uint8_t *data, uint8_t len) {
@@ -228,14 +243,25 @@ int lora_init(void) {
     };
     gpio_config(&io);
 
-    // Hardware reset: RST low 1ms, then high 10ms
+    // Hardware reset: RST low 1ms, then release and wait for BUSY to go low
     gpio_set_direction(PIN_RST, GPIO_MODE_OUTPUT);
     gpio_set_level(PIN_RST, 0);
     vTaskDelay(pdMS_TO_TICKS(1));
     gpio_set_level(PIN_RST, 1);
-    vTaskDelay(pdMS_TO_TICKS(10));
+    // Wait up to 2s for chip to boot (BUSY stays high during boot)
+    {
+        uint32_t dl = xTaskGetTickCount() + pdMS_TO_TICKS(2000);
+        while (gpio_get_level(PIN_BUSY)) {
+            if (xTaskGetTickCount() > dl) break;
+            vTaskDelay(1);
+        }
+    }
+    vTaskDelay(pdMS_TO_TICKS(10)); // settle
 
-    // Initialize SPI bus
+    // Initialize SPI bus — manually configure NSS as output HIGH first
+    gpio_set_direction(PIN_NSS, GPIO_MODE_OUTPUT);
+    gpio_set_level(PIN_NSS, 1);
+
     spi_bus_config_t bus_cfg = {
         .mosi_io_num = PIN_MOSI,
         .miso_io_num = PIN_MISO,
@@ -252,9 +278,10 @@ int lora_init(void) {
 
     spi_device_interface_config_t dev_cfg = {
         .mode = 0,                          // SPI mode 0
-        .clock_speed_hz = 8000000,          // 8 MHz
+        .clock_speed_hz = 1000000,          // 1 MHz (conservative)
         .spics_io_num = PIN_NSS,
         .queue_size = 1,
+        .flags = SPI_DEVICE_HALFDUPLEX,     // SX1262 is half-duplex
     };
     ret = spi_bus_add_device(SPI2_HOST, &dev_cfg, &spi);
     if (ret != ESP_OK) {
@@ -262,9 +289,9 @@ int lora_init(void) {
         return -2;
     }
 
-    // Configure SX1262
-    lora_set_sleep(0x00);
-    lora_set_standby(0x01);
+    // Configure SX1262 — chip is in STDBY_RC after reset
+    lora_set_standby(0x01);  // standby with XOSC
+    vTaskDelay(pdMS_TO_TICKS(10));
     lora_set_packet_type(0x01);      // LoRa mode
     lora_set_freq(LORA_FREQ);
     lora_set_modulation_params(LORA_SF, LORA_BW, LORA_CR, 0); // ldro off for SF9
@@ -278,12 +305,16 @@ int lora_init(void) {
     lora_set_dio_irq_params(IRQ_TX_DONE | IRQ_RX_DONE,
                              IRQ_TX_DONE | IRQ_RX_DONE, 0, 0);
 
-    // TX power 22 dBm, ramp 200us
-    lora_set_tx_params(LORA_TX_POWER, 0x04);
-
     // DCDC regulator mode (better efficiency)
     uint8_t reg = 0x01;
     lora_cmd(OP_SET_REGULATOR_MODE, &reg, 1);
+
+    // High-power PA config: must precede SetTxParams
+    uint8_t pa_cfg[4] = { 0x04, 0x07, 0x00, 0x01 };
+    lora_cmd(OP_SET_PA_CONFIG, pa_cfg, 4);
+
+    // TX power 22 dBm, ramp 200us
+    lora_set_tx_params(LORA_TX_POWER, 0x04);
 
     // Calibrate
     lora_calibrate();
@@ -297,28 +328,37 @@ int lora_init(void) {
 
 // Send a packet. Blocks until TX complete (or timeout).
 // max 255 bytes payload. Returns 0 on success.
+// NOTE: BUSY pin stuck low on this hardware — TX succeeds ~50% of calls.
+// Timeout kept short (2s) to minimize main loop blocking.
 int lora_send(const uint8_t *data, uint8_t len) {
     if (len > 255) return -1;
     if (!spi) return -2;
 
     lora_set_standby(0x01);
-    lora_write_buffer(0x00, data, len);
-    lora_set_packet_params(LORA_PREAMBLE, 0x00, len, 0x01, 0x00);
-    lora_set_tx(5000); // 5s timeout
+    vTaskDelay(pdMS_TO_TICKS(10));
 
-    // Wait for TX done
-    uint32_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(5000);
+    lora_clear_irq_status(0xFFFF);
+    vTaskDelay(pdMS_TO_TICKS(10));
+
+    lora_write_buffer(0x00, data, len);
+    vTaskDelay(pdMS_TO_TICKS(10));
+    lora_set_packet_params(LORA_PREAMBLE, 0x00, len, 0x01, 0x00);
+    vTaskDelay(pdMS_TO_TICKS(10));
+
+    lora_set_tx(2000); // 2s timeout
+    vTaskDelay(pdMS_TO_TICKS(5));
+
+    uint32_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(2000);
     while (xTaskGetTickCount() < deadline) {
         uint16_t irq = lora_get_irq_status();
         if (irq & IRQ_TX_DONE) {
             lora_clear_irq_status(IRQ_TX_DONE);
-            lora_set_rx(0);  // back to RX
+            lora_set_rx(0);
             return 0;
         }
-        vTaskDelay(pdMS_TO_TICKS(50)); // yield to watchdog
+        vTaskDelay(pdMS_TO_TICKS(50));
     }
 
-    printf("Argus: LoRa TX timeout\n");
     lora_set_rx(0);
     return -3;
 }
