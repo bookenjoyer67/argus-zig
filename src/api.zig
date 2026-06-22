@@ -13,7 +13,7 @@ const display = @import("display.zig");
 const mesh = @import("mesh.zig");
 const config = @import("config.zig");
 
-const FIRMWARE_VERSION = "1.1.0";
+const FIRMWARE_VERSION = main.FIRMWARE_VERSION;
 const MAX_DETECTIONS = 50;
 
 /// Minimal append-only JSON writer over a fixed buffer.

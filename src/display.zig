@@ -710,7 +710,7 @@ fn drawSystem() void {
     oledDrawStr(0, 0, "SYSTEM");
 
     // Free heap (simplified — ESP-IDF provides this)
-    oledDrawStr(0, 14, "Firmware: v1.0");
+    oledDrawStr(0, 14, "Firmware: v" ++ main.FIRMWARE_VERSION);
     oledDrawStr(0, 24, "Flash: 3MB app");
     // Carrier probes (IMSI catcher indicator)
     var probe_buf: [24]u8 = undefined;
