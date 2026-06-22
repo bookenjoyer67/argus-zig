@@ -760,6 +760,115 @@ const NUM_PAGES: u8 = 7;
 /// Saved to /spiffs/session.dat and restored on boot.
 var session_total: u32 = 0;
 
+/// GPS position — lat/lon in decimal degrees × 10^6.
+/// 0 means no fix yet. Updated by parseNmea().
+var gps_lat: i32 = 0;   // e.g. 38117300 = 38.117300°
+var gps_lon: i32 = 0;   // e.g. -90199400 = -90.199400°
+var gps_fix: bool = false;
+var gps_sats: u8 = 0;
+
+/// NMEA sentence line accumulator. gps_read() fills this buffer,
+/// and on '\n', parseNmea() processes the complete sentence.
+var gps_line: [128]u8 = undefined;
+var gps_line_pos: usize = 0;
+
+/// Parse a complete NMEA sentence and extract GPS fix data.
+/// Handles $GPGGA (fix, sats) and $GPRMC (time, lat, lon).
+fn parseNmea(line: []const u8) void {
+    // Must start with '$'
+    if (line.len < 10 or line[0] != '$') return;
+
+    // Find first comma
+    var start: usize = 0;
+    for (line, 0..) |c, i| {
+        if (c == ',') { start = i + 1; break; }
+        if (i > 6) return; // sentence ID too long
+    }
+    if (start == 0) return;
+
+    // Check sentence type (2nd char after $)
+    const talker = line[1..start-1];
+
+    // $GPGGA — fix data
+    if (talker.len >= 5 and std.mem.eql(u8, talker[talker.len-5..], "GPGGA")) {
+        var fields: [15][]const u8 = undefined;
+        var fi: usize = 0;
+        var pos: usize = start;
+        while (fi < 15 and pos < line.len) : (fi += 1) {
+            const end = std.mem.indexOfScalarPos(u8, line, pos, ',') orelse line.len;
+            fields[fi] = line[pos..end];
+            pos = end + 1;
+        }
+
+        // Field 2: lat (DDMM.MMMM), 6: quality, 7: sats, 4: lon (DDDMM.MMMM)
+        if (fi >= 8 and fields[2].len > 0 and fields[4].len > 0) {
+            gps_lat = parseNmeaCoord(fields[2], if (fi >= 4) fields[3] else "N");
+            gps_lon = parseNmeaCoord(fields[4], if (fi >= 6) fields[5] else "E");
+
+            // Fix quality: 0=invalid, 1=GPS, 2=DGPS
+            gps_fix = fi >= 7 and fields[6].len > 0 and fields[6][0] != '0';
+
+            // Satellite count
+            if (fi >= 8 and fields[7].len > 0) {
+                gps_sats = std.fmt.parseInt(u8, fields[7], 10) catch 0;
+            }
+        }
+        return;
+    }
+
+    // $GPRMC — recommended minimum (fallback for lat/lon)
+    if (talker.len >= 5 and std.mem.eql(u8, talker[talker.len-5..], "GPRMC")) {
+        var fields: [10][]const u8 = undefined;
+        var fi: usize = 0;
+        var pos: usize = start;
+        while (fi < 10 and pos < line.len) : (fi += 1) {
+            const end = std.mem.indexOfScalarPos(u8, line, pos, ',') orelse line.len;
+            fields[fi] = line[pos..end];
+            pos = end + 1;
+        }
+
+        // Field 2: status (A=valid), 3: lat, 4: NS, 5: lon, 6: EW
+        if (fi >= 6 and fields[2].len > 0 and fields[2][0] == 'A') {
+            const lat = parseNmeaCoord(fields[3], fields[4]);
+            const lon = parseNmeaCoord(fields[5], fields[6]);
+            if (lat != 0) gps_lat = lat;
+            if (lon != 0) gps_lon = lon;
+            gps_fix = true;
+        }
+    }
+}
+
+/// Parse NMEA coordinate: DDMM.MMMM or DDDMM.MMMM → decimal degrees × 10^6.
+/// direction: "N"/"S"/"E"/"W" — determines sign.
+fn parseNmeaCoord(raw: []const u8, dir: []const u8) i32 {
+    if (raw.len < 4) return 0;
+
+    // Find decimal point
+    const dot = std.mem.indexOfScalar(u8, raw, '.') orelse return 0;
+    const deg_part = raw[0..dot-2];    // everything before MM
+    const min_part = raw[dot-2..];     // MM.MMMM
+
+    const deg: i32 = std.fmt.parseInt(i32, deg_part, 10) catch return 0;
+    const min: i32 = std.fmt.parseInt(i32, min_part[0..2], 10) catch return 0;
+    // Minutes fraction
+    var frac: i32 = 0;
+    if (min_part.len > 3) {
+        frac = std.fmt.parseInt(i32, min_part[3..], 10) catch 0;
+    }
+
+    // Convert: degrees + minutes/60, then × 10^6
+    // min_fraction = min * 1000000 / 60 + frac_factor
+    const min_scaled = @divTrunc(min * 1000000, 60) + @divTrunc(frac * 10000, 6000);
+    var result = deg * 1000000 + min_scaled;
+
+    // Apply sign
+    if (dir.len > 0 and (dir[0] == 'S' or dir[0] == 'W')) {
+        result = -result;
+    }
+
+    return result;
+}
+
 /// Persist session counter to SPIFFS.
 fn saveSession() void {
     var buf: [16]u8 = undefined;
@@ -786,11 +895,11 @@ fn logCsv(mac: [6]u8, rssi: i8) void {
             const methods = trackers[i].methods;
             const score = trackers[i].score;
 
-            var line: [80]u8 = undefined;
-            const s = std.fmt.bufPrint(&line, "{d},{s},{X:0>2}{X:0>2}{X:0>2}{X:0>2}{X:0>2}{X:0>2},{d},{d},{X:0>2}\n", .{
+            var line: [110]u8 = undefined;
+            const s = std.fmt.bufPrint(&line, "{d},{s},{X:0>2}{X:0>2}{X:0>2}{X:0>2}{X:0>2}{X:0>2},{d},{d},{d},{d},{X:0>2}\n", .{
                 tick_ms, ks,
                 mac[0], mac[1], mac[2], mac[3], mac[4], mac[5],
-                rssi, score, methods,
+                rssi, score, gps_lat, gps_lon, methods,
             }) catch return;
             line[s.len] = 0; // null-terminate for C
             _ = spiffs_append_line("detections.csv", line[0..s.len :0].ptr);
@@ -807,6 +916,9 @@ extern fn spiffs_csv_export() void;
 // lora_poll_receive: check for received packet, returns length (0 if none).
 extern fn lora_send(data: [*]const u8, len: u8) i32;
 extern fn lora_poll_receive(buf: [*]u8) i32;
+
+// GPS NEO-6M — UART1 on GPIO 4/5 at 9600 baud
+extern fn gps_read(buf: [*]u8, max_len: i32) i32;
 
 /// Draw page number indicator top-right (e.g. "1/7").
 fn drawPageNum(page: u8) void {
@@ -874,7 +986,16 @@ fn drawSummary() void {
     oledDrawStr(0, 28, "OUI:");
     oledDrawInt(48, 28, @intCast(KNOWN_OUIS_COUNT));
     drawBatteryBar(0, 38, 40, 8);
-    oledDrawStr(0, 52, "PRG:page  LED:alert");
+    // GPS status
+    var gps_buf: [24]u8 = undefined;
+    if (gps_fix) {
+        _ = std.fmt.bufPrint(&gps_buf, "GPS:{d}.{d} {d}sats", .{
+            @divTrunc(gps_lat, 1000000), @abs(@rem(@divTrunc(gps_lat, 10000), 100)), gps_sats,
+        }) catch {};
+    } else {
+        _ = std.fmt.bufPrint(&gps_buf, "GPS: NOFIX     ", .{}) catch {};
+    }
+    oledDrawStr(0, 52, &gps_buf);
     oledUpdate();
 }
 
@@ -936,6 +1057,16 @@ fn drawProximity() void {
     var score_buf: [16]u8 = undefined;
     _ = std.fmt.bufPrint(&score_buf, "SC: {d} {s}", .{ t.score, scoreLevel(t.score) }) catch {};
     oledDrawStr(0, 34, &score_buf);
+
+    // GPS coordinates if fix available
+    if (gps_fix) {
+        var gps_buf: [32]u8 = undefined;
+        _ = std.fmt.bufPrint(&gps_buf, "GPS:{d}.{d} {d}.{d}", .{
+            @divTrunc(gps_lat, 1000000), @abs(@rem(@divTrunc(gps_lat, 10000), 100)),
+            @divTrunc(gps_lon, 1000000), @abs(@rem(@divTrunc(gps_lon, 10000), 100)),
+        }) catch {};
+        oledDrawStr(0, 44, &gps_buf);
+    }
 
     // RSSI bar: -100 = 0%, -20 = 100%
     const rssi_pct: u8 = if (t.rssi < -100) 0 else if (t.rssi > -20) 100 else blk: {
@@ -1044,7 +1175,14 @@ fn drawSystem() void {
     // Free heap (simplified — ESP-IDF provides this)
     oledDrawStr(0, 14, "Heap: ~300K");
     oledDrawStr(0, 24, "Flash: 3MB app");
-    oledDrawStr(0, 34, "Freq: 160MHz");
+    // GPS info
+    if (gps_fix) {
+        var gps_buf: [24]u8 = undefined;
+        _ = std.fmt.bufPrint(&gps_buf, "GPS:{d}sat 3Dfix", .{gps_sats}) catch {};
+        oledDrawStr(0, 34, &gps_buf);
+    } else {
+        oledDrawStr(0, 34, "GPS: no fix    ");
+    }
 
     const mv = battery_read_mv();
     const v = @as(u32, @intCast(mv));
@@ -1430,6 +1568,26 @@ export fn zig_main() callconv(.c) void {
         const lora_len = lora_poll_receive(&lora_buf);
         if (lora_len > 0) {
             meshRecv(lora_buf[0..@intCast(lora_len)]);
+        }
+
+        // --- GPS NMEA accumulator ---
+        // Read available bytes from GPS UART, accumulate lines,
+        // parse complete NMEA sentences on newline.
+        var gps_buf: [64]u8 = undefined;
+        const gps_n = gps_read(&gps_buf, 64);
+        if (gps_n > 0) {
+            const gps_data = gps_buf[0..@intCast(gps_n)];
+            for (gps_data, 0..) |c, ci| {
+                if (c == '\n' and gps_line_pos > 0) {
+                    parseNmea(gps_line[0..gps_line_pos]);
+                    gps_line_pos = 0;
+                } else if (gps_line_pos < gps_line.len and c != '\r') {
+                    gps_line[gps_line_pos] = c;
+                    gps_line_pos += 1;
+                }
+                // Yield periodically during burst reads
+                if (ci % 32 == 31) delayMs(5);
+            }
         }
 
         // --- Yield to FreeRTOS ---

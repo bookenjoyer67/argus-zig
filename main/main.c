@@ -41,6 +41,9 @@ extern int spiffs_init_storage(void);
 // Defined in lora.c
 extern int lora_init(void);
 
+// Defined in gps.c
+extern int gps_init(void);
+
 // ================================================================
 // OLED I2C helpers — called from Zig via extern fn
 // ================================================================
@@ -240,6 +243,9 @@ void app_main(void) {
 
     // --- Initialize LoRa radio for mesh networking ---
     lora_init();
+
+    // --- Initialize GPS UART (NEO-6M on GPIO 4/5) ---
+    gps_init();
 
     // --- Hand off to Zig ---
     //
