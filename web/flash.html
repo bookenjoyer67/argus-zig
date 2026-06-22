@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Argus — Web Flasher</title>
+<script type="module" src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"></script>
+<style>
+  :root{ --bg:#04060d; --surface:rgba(12,19,32,.82); --text:#dfeae4;
+    --accent:#1eff9d; --gold:#e8c24a; --line:rgba(232,194,74,.25); --muted:#8fa3ad; }
+  *{box-sizing:border-box}
+  body{ margin:0; color:var(--text); font-family:system-ui,sans-serif; padding:28px 18px 64px;
+    background:
+      radial-gradient(1px 1px at 20% 30%, rgba(255,255,255,.5), transparent),
+      radial-gradient(1px 1px at 75% 60%, rgba(120,255,200,.45), transparent),
+      radial-gradient(1000px 620px at 50% -12%, rgba(30,255,157,.12), transparent 70%),
+      var(--bg); background-attachment:fixed; min-height:100vh; }
+  .wrap{ max-width:640px; margin:0 auto; }
+  h1{ letter-spacing:6px; font-size:30px; color:#eafff5; font-weight:700; margin:0 0 4px;
+    text-shadow:0 0 8px rgba(30,255,157,.7), 0 0 22px rgba(30,255,157,.35); }
+  .tag{ font-size:13px; letter-spacing:2px; color:rgba(30,255,157,.7); margin-bottom:24px; }
+  .panel{ background:var(--surface); border:1px solid var(--line); border-radius:12px;
+    padding:20px; margin-bottom:16px; box-shadow:inset 0 0 0 1px rgba(30,255,157,.06), 0 4px 24px rgba(0,0,0,.55); }
+  h2{ font-size:13px; text-transform:uppercase; letter-spacing:2px; color:rgba(30,255,157,.7); margin:0 0 12px; }
+  ol{ margin:0; padding-left:20px; line-height:1.7; font-size:14px; }
+  .flashbtn{ background:var(--accent); color:#04140d; border:none; border-radius:8px;
+    padding:12px 22px; font:inherit; font-weight:700; letter-spacing:1px; cursor:pointer;
+    box-shadow:0 0 16px rgba(30,255,157,.4); }
+  .note{ font-size:12px; color:var(--muted); margin-top:14px; line-height:1.6; }
+  .warn{ color:var(--gold); }
+  a{ color:var(--accent); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>ARGUS</h1>
+  <div class="tag">WEB FLASHER &mdash; HELTEC WIFI LORA 32 V3 (ESP32-S3)</div>
+
+  <div class="panel">
+    <h2>Flash your device</h2>
+    <ol>
+      <li>Use <b>desktop Chrome or Edge</b> (Web Serial isn't supported on Firefox, Safari, or mobile).</li>
+      <li>Connect the Heltec V3 over <b>USB-C</b>.</li>
+      <li>Click <b>Install</b>, pick the serial port, and confirm.</li>
+    </ol>
+    <p style="margin:18px 0 0">
+      <esp-web-install-button manifest="firmware/manifest.json">
+        <button slot="activate" class="flashbtn">Install Argus</button>
+        <span slot="unsupported" class="warn">Your browser can't flash &mdash; use desktop Chrome or Edge.</span>
+        <span slot="not-allowed" class="warn">Open this page over HTTPS to flash.</span>
+      </esp-web-install-button>
+    </p>
+    <p class="note">
+      On a fresh device, accept the <b>erase</b> prompt for a clean install &mdash; this wipes
+      stored config and BLE pairings, and the device boots into the "Argus Setup" onboarding AP.
+      Re-flashing an already-configured unit without erasing keeps its config.
+    </p>
+  </div>
+
+  <div class="panel">
+    <h2>After flashing</h2>
+    <ol>
+      <li>Join the <b>Argus Setup</b> WiFi, open <b>http://192.168.4.1</b>, choose <b>Mobile</b> or <b>Base</b>.</li>
+      <li>Mobile units stream to a phone over Bluetooth &mdash;
+        <a href="ble.html">open the BLE client</a>.</li>
+    </ol>
+  </div>
+</div>
+</body>
+</html>

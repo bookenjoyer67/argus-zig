@@ -3,6 +3,8 @@ name: Deploy static content to Pages
 on:
   push:
     branches: [main]
+  release:
+    types: [published]
   workflow_dispatch:
 
 permissions:
@@ -23,6 +25,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/configure-pages@v5
+      - name: Fetch latest firmware binary for the web flasher
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p web/firmware
+          gh release download --pattern 'argus-merged.bin' --dir web/firmware --clobber \
+            || echo "no release asset yet — flasher will 404 until a release exists"
       - uses: actions/upload-pages-artifact@v3
         with:
           path: '.'

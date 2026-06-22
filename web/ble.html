@@ -200,6 +200,19 @@ function upsert(store, key, lat, lon, color, radius, popup){
       weight:1,fillOpacity:.85}).addTo(map).bindPopup(popup); }
 }
 
+// --- foreground push: notify + vibrate on threat-level transition ---
+let wasElevated = false;
+function pushAlert(level, stingray){
+  const elevated = level === 'watched' || level === 'targeted' || !!stingray;
+  if (elevated && !wasElevated){
+    const msg = stingray ? 'Possible IMSI catcher (Stingray)' : ('Threat level: ' + level);
+    try { if ('Notification' in window && Notification.permission === 'granted')
+      new Notification('Argus alert', { body: msg }); } catch(_){}
+    try { if (navigator.vibrate) navigator.vibrate([200,100,200]); } catch(_){}
+  }
+  wasElevated = elevated;
+}
+
 function renderStatus(s){
   const sb = s.surv_breakdown||{};
   setTile('t-flock', sb.flock_camera||0); setTile('t-drone', sb.drone||0);
@@ -211,6 +224,7 @@ function renderStatus(s){
   $('uptime').textContent=fmtUptime(s.uptime_seconds||0);
   $('batt').textContent=(s.battery_pct??'--')+'%';
   $('ver').textContent='v'+(s.firmware_version||'?');
+  pushAlert(lv, s.stingray_active);
 }
 
 function renderFeed(dets){
@@ -306,6 +320,8 @@ async function connect(){
     tx.addEventListener('characteristicvaluechanged', onNotify);
     $('conn-status').textContent='paired \u2014 live';
     $('connect').textContent='Connected';
+    try { if ('Notification' in window && Notification.permission === 'default')
+      Notification.requestPermission(); } catch(_){}
     // initial pulls; status auto-pushes ~1.5s
     send('config'); send('status'); send('detections'); send('mesh'); send('cameras');
     timers.push(setInterval(()=>send('detections'), 6000));
