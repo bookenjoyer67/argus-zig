@@ -16,7 +16,7 @@
 #include "esp_netif.h"
 #include "esp_event.h"
 
-#define WIFI_RING_SIZE 64
+#define WIFI_RING_SIZE 128
 
 struct wifi_scan_result {
     uint8_t addr[6];       // transmitter MAC (addr2)
@@ -35,12 +35,16 @@ static volatile int wifi_ring_write = 0;
 static volatile int wifi_ring_read = 0;
 static volatile uint32_t wifi_total_frames = 0;
 static volatile uint32_t wifi_filtered_frames = 0;
+static volatile uint32_t wifi_ring_dropped = 0;
 
 // Push a result into the ring buffer. Called from WiFi callback
 // (runs in WiFi task context). Drops if full.
 static void wifi_ring_push(const struct wifi_scan_result *r) {
     int next = (wifi_ring_write + 1) % WIFI_RING_SIZE;
-    if (next == wifi_ring_read) return;
+    if (next == wifi_ring_read) {
+        wifi_ring_dropped++;
+        return;
+    }
 
     memcpy(&wifi_ring[wifi_ring_write], r, sizeof(*r));
     wifi_ring_write = next;
@@ -184,4 +188,9 @@ int wifi_scan_poll(uint8_t *addr_out, uint8_t *receiver_out,
 // Return total WiFi frames captured (for diagnostics).
 uint32_t wifi_get_frame_count(void) {
     return wifi_total_frames;
+}
+
+// Return count of frames dropped due to ring buffer overflow.
+uint32_t wifi_get_dropped_count(void) {
+    return wifi_ring_dropped;
 }

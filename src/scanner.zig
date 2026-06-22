@@ -88,7 +88,7 @@ const BLE_SIGNATURES = [_]BleSignature{
     // ASTM Drone Remote ID (BLE UUID 0xFFFA)
     .{ .company_id = null, .service_uuids = &.{0xFFFA}, .tracker_type = .drone, .method = METHOD_DRONE },
     // Amazon Sidewalk (Ring, Echo, Tile via Sidewalk)
-    .{ .company_id = 0x0171, .service_uuids = &.{}, .tracker_type = .unknown, .method = METHOD_SIDEWALK },
+    .{ .company_id = 0x0171, .service_uuids = &.{}, .tracker_type = .camera, .method = METHOD_SIDEWALK },
     // Chipolo trackers (Immediate Alert service 0x1802)
     .{ .company_id = null, .service_uuids = &.{0x1802}, .tracker_type = .unknown, .method = METHOD_TILE },
     // Fitbit / wearables (company ID 0x0059)
@@ -153,6 +153,7 @@ pub fn classifyBle(adv_data: []const u8) ClassResult {
     var raven_fw_major: u8 = 0;
 
     var pos: usize = 0;
+    var handled_findmy: bool = false;
     while (pos + 1 < adv_data.len) {
         const len = adv_data[pos];
         if (len == 0) break;
@@ -166,13 +167,19 @@ pub fn classifyBle(adv_data: []const u8) ClassResult {
 
             // Apple Find My special check: company 0x004C + byte 2 == 0x12
             if (company == 0x004C and payload.len >= 3 and payload[2] == 0x12) {
-                kind = .airtag;
-                methods |= METHOD_FINDMY;
+                handled_findmy = true;
+                // AirTags send 28+ bytes (status + full public key).
+                // iPhones/iPads send only 4-8 bytes (short status).
+                if (payload.len >= 22) {
+                    kind = .airtag;
+                    methods |= METHOD_FINDMY;
+                }
             }
 
             // Iterate signature table for company_id matches
             for (BLE_SIGNATURES) |sig| {
                 if (sig.company_id != null and sig.company_id.? == company) {
+                    if (sig.company_id.? == 0x004C and handled_findmy) continue;
                     if (sig.tracker_type != .unknown) kind = sig.tracker_type;
                     methods |= sig.method;
                 }
@@ -245,7 +252,7 @@ pub fn classifyWiFi(mac: [6]u8, ssid: []const u8) ClassResult {
     if (oui_match) methods |= METHOD_OUI;
 
     // Camera SSID keywords — case-insensitive match
-    const cam_keywords = [_][]const u8{ "hikvision", "dahua", "reolink", "camera", "cam_", "amcrest" };
+    const cam_keywords = [_][]const u8{ "hikvision", "dahua", "reolink", "camera", "cam_", "amcrest", "ring" };
     for (cam_keywords) |kw| {
         if (ssid.len >= kw.len) {
             var match = true;
@@ -340,6 +347,13 @@ fn detectRssiTrend(history: [5]i8) bool {
 /// observations, keeps the best RSSI, and recomputes confidence score.
 /// Returns true if this is a new tracker (for alert triggering).
 pub fn trackDevice(mac: [6]u8, result: ClassResult, rssi: i8) bool {
+    // Pre-compute score for filter check
+    const score = computeScore(result.methods, rssi, mac);
+
+    // Skip randomized MACs with low confidence — phones rotate addresses
+    // and appear as new entries. Don't waste tracker table slots on them.
+    if (score < SCORE_MED and (mac[0] & 0x02) != 0) return false;
+
     for (0..main.tracker_count) |i| {
         if (std.mem.eql(u8, &main.trackers[i].mac, &mac)) {
             main.trackers[i].methods |= result.methods;
@@ -359,7 +373,6 @@ pub fn trackDevice(mac: [6]u8, result: ClassResult, rssi: i8) bool {
     }
 
     // New tracker
-    const score = computeScore(result.methods, rssi, mac);
     const entry = main.TrackerEntry{
         .mac = mac,
         .kind = result.kind,

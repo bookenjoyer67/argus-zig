@@ -474,8 +474,11 @@ fn drawHistory() void {
     for (0..main.tracker_count) |i| {
         const age = now_sec -| (main.trackers[i].last_seen / 1000);
         if (age > 3600) continue;
-        const bucket: usize = @intCast(age / 720); // 12 min = 720s
-        if (bucket < 5) buckets[bucket] += 1;
+        const b: usize = @intCast(age / 720); // 12 min = 720s
+        if (b < 5) {
+            const bucket: usize = 4 - b; // rightmost=recent, leftmost=oldest
+            buckets[bucket] += 1;
+        }
     }
 
     // Find max for scaling
@@ -490,7 +493,7 @@ fn drawHistory() void {
         oledDrawBar(bar_x[b], 50 - h, 20, h, 100);
     }
 
-    oledDrawStr(0, 52, " 12  24  36  48  60m");
+    oledDrawStr(0, 52, "60  48  36  24  now");
     oledDrawStr(0, 56, "PRG:next page");
     oledUpdate();
 }
@@ -575,6 +578,14 @@ fn drawSystem() void {
     var buf: [16]u8 = undefined;
     _ = std.fmt.bufPrint(&buf, "V: {d}.{d}V", .{ v / 1000, (v / 100) % 10 }) catch {};
     oledDrawStr(0, 44, &buf);
+
+    // WiFi ring buffer overflow counter
+    const dropped = main.wifi_get_dropped_count();
+    if (dropped > 0) {
+        var drop_buf: [24]u8 = undefined;
+        _ = std.fmt.bufPrint(&drop_buf, "Dropped:{d}", .{dropped}) catch {};
+        oledDrawStr(0, 50, &drop_buf);
+    }
 
     oledDrawStr(0, 56, "PRG:next page");
     oledUpdate();

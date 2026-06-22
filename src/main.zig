@@ -110,6 +110,9 @@ pub extern fn wifi_scan_poll(addr_out: [*]u8, receiver_out: [*]u8, rssi_out: *i8
 // Diagnostic: total WiFi frames captured (to verify sniffer is running)
 pub extern fn wifi_get_frame_count() u32;
 
+// Diagnostic: frames dropped due to ring buffer overflow
+pub extern fn wifi_get_dropped_count() u32;
+
 // Battery ADC — GPIO 1 with 390k/100k divider on Heltec V3.
 // Returns battery voltage in millivolts (e.g. 4100 = 4.1V).
 pub extern fn battery_read_mv() i32;
