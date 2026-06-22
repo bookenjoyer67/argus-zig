@@ -258,8 +258,10 @@ pub const TrackerEntry = struct {
     kind: display.TrackerType,
     rssi: i8,
     last_seen: u32,
-    score: u8,       // 0-100 confidence score
-    methods: u16,     // bitmask of detection methods
+    score: u8,              // 0-100 confidence score
+    methods: u16,            // bitmask of detection methods
+    rssi_history: [5]i8,     // recent RSSI values (ring buffer)
+    rssi_hidx: u3,           // write index into rssi_history
 };
 
 pub var trackers: [MAX_TRACKERS]TrackerEntry = undefined;

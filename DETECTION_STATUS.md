@@ -85,10 +85,14 @@ alone is too generic. Single UUID gets METHOD_RAVEN_LOW at 40 pts MED instead of
 
 ### Priority 2 — False Positive Reduction
 
-**RSSI trend tracking.**
-A stationary camera produces rise-peak-fall as you approach and pass. A moving phone appears suddenly at close range. Track last 3-5 RSSI values per device, detect the pattern, add +15 pts confidence bonus.
-- File: `src/scanner.zig`, new field in TrackerEntry
-- Effort: 2 hours
+**RSSI trend tracking.** ✅ DONE
+TrackerEntry extended with rssi_history[5] ring buffer + rssi_hidx index.
+trackDevice() pushes each new RSSI observation into the history buffer.
+detectRssiTrend() checks for rise-peak-fall pattern across 3+ sightings —
+a strong indicator of a stationary transmitter (camera, sensor, beacon).
++10 pts bonus applied after computeScore when trend detected.
+- File: `src/scanner.zig` lines 320, 314-335
+- Effort: 45 minutes
 
 **Time-window re-detection.**
 Same MAC + same approximate location 5+ minutes apart = fixed installation. Different location every time = mobile device. Track MAC + location hash pairs for re-detection scoring.
@@ -127,8 +131,8 @@ Currently scans channels 1, 6, 11 only. Flock cameras may use other channels. Fu
 
 ## Quick Wins (30 min or less each)
 
-- Add 3 more camera OUIs to ouis.txt (find them on Wigle.net or IEEE OUI lookup)
-- Change buzzer alert pattern for CERTAIN detections (edit `alertByScore` in display.zig)
-- Add a new camera SSID keyword (edit `cam_keywords` in scanner.zig line 241)
-- Add a new BLE signature to BLE_SIGNATURES table (scanner.zig line 80)
-- Change confidence score weights (edit `computeScore` in scanner.zig line 111)
+- Add 3 more camera OUIs to ouis.txt (find them on Wigle.net or IEEE OUI lookup) ✅ Done — Amcrest, Lorex, Uniview
+- Change buzzer alert pattern for CERTAIN detections (edit `alertByScore` in display.zig) — N/A (buzzer removed, LED used)
+- Add a new camera SSID keyword (edit `cam_keywords` in scanner.zig line 241) ✅ Done — added "amcrest"
+- Add a new BLE signature to BLE_SIGNATURES table (scanner.zig line 80) ✅ Done — Tile (older style, manufacturer 0x0224)
+- Change confidence score weights (edit `computeScore` in scanner.zig line 111) — available for tuning after field data

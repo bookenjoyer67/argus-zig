@@ -95,6 +95,8 @@ const BLE_SIGNATURES = [_]BleSignature{
     .{ .company_id = 0x0059, .service_uuids = &.{}, .tracker_type = .unknown, .method = METHOD_BLE_NAME },
     // Tesla phone key (BLE key fob service 0x1530)
     .{ .company_id = null, .service_uuids = &.{0x1530}, .tracker_type = .unknown, .method = METHOD_BLE_NAME },
+    // Tile (older style via manufacturer 0x0224)
+    .{ .company_id = 0x0224, .service_uuids = &.{}, .tracker_type = .tile, .method = METHOD_TILE },
 };
 
 pub const ClassResult = struct {
@@ -243,7 +245,7 @@ pub fn classifyWiFi(mac: [6]u8, ssid: []const u8) ClassResult {
     if (oui_match) methods |= METHOD_OUI;
 
     // Camera SSID keywords — case-insensitive match
-    const cam_keywords = [_][]const u8{ "hikvision", "dahua", "reolink", "camera", "cam_" };
+    const cam_keywords = [_][]const u8{ "hikvision", "dahua", "reolink", "camera", "cam_", "amcrest" };
     for (cam_keywords) |kw| {
         if (ssid.len >= kw.len) {
             var match = true;
@@ -308,6 +310,32 @@ pub fn classifyWiFi(mac: [6]u8, ssid: []const u8) ClassResult {
 // TRACKER TABLE UPDATES
 // ================================================================
 
+/// Detect rise-peak-fall RSSI pattern — indicates a stationary transmitter
+/// (camera, sensor) that the scanner approached then passed.
+/// Checks the 5-value ring buffer for a multi-sighting trend.
+fn detectRssiTrend(history: [5]i8) bool {
+    // Need at least 3 valid values (non-zero, since 0 = uninitialized)
+    const values = history;
+    var count: u8 = 0;
+    for (values) |v| {
+        if (v != 0) count += 1;
+    }
+    if (count < 3) return false;
+
+    // Rotate to chronological order based on hidx (older → newer)
+    // For simplicity: check if any 3 consecutive values show rise then fall
+    var rising: bool = false;
+    for (0..4) |i| {
+        if (values[i] == 0 or values[i+1] == 0) continue;
+        if (values[i] < values[i+1]) {
+            rising = true;
+        } else if (rising and values[i] > values[i+1]) {
+            return true; // rise followed by fall = stationary
+        }
+    }
+    return false;
+}
+
 /// Add or update a tracker entry. Accumulates detection methods across
 /// observations, keeps the best RSSI, and recomputes confidence score.
 /// Returns true if this is a new tracker (for alert triggering).
@@ -318,7 +346,14 @@ pub fn trackDevice(mac: [6]u8, result: ClassResult, rssi: i8) bool {
             if (result.kind != .unknown) main.trackers[i].kind = result.kind;
             if (rssi > main.trackers[i].rssi) main.trackers[i].rssi = rssi;
             main.trackers[i].last_seen = main.tick_ms;
+            // Push RSSI into 5-value history ring buffer for trend detection
+            main.trackers[i].rssi_history[main.trackers[i].rssi_hidx] = rssi;
+            main.trackers[i].rssi_hidx +%= 1;
             main.trackers[i].score = computeScore(main.trackers[i].methods, main.trackers[i].rssi, mac);
+            // RSSI trend bonus: rise-peak-fall = stationary device (camera, sensor)
+            if (detectRssiTrend(main.trackers[i].rssi_history)) {
+                if (main.trackers[i].score < 90) main.trackers[i].score += 10;
+            }
             return false;
         }
     }
@@ -332,6 +367,8 @@ pub fn trackDevice(mac: [6]u8, result: ClassResult, rssi: i8) bool {
         .last_seen = main.tick_ms,
         .score = score,
         .methods = result.methods,
+        .rssi_history = [_]i8{0} ** 5,
+        .rssi_hidx = 0,
     };
 
     if (main.tracker_count < main.MAX_TRACKERS) {

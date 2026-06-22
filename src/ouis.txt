@@ -94,3 +94,11 @@ b8:a4:4f
 # Hanwha (formerly Samsung Techwin)
 00:16:6c
 00:68:eb
+
+# Additional surveillance cameras
+# Amcrest
+9c:8e:cd
+# Lorex
+00:1f:54  
+# Uniview
+58:e8:76
