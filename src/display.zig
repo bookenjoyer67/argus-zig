@@ -351,6 +351,18 @@ pub fn drawSetup() void {
     oledUpdate();
 }
 
+/// BLE pairing screen — shows the 6-digit passkey to enter on the phone.
+pub fn drawPasskey(passkey: u32) void {
+    oledClear();
+    oledDrawStrScaled(4, 0, "PAIR", 2);
+    oledDrawStr(0, 24, "Enter on phone:");
+    var buf: [8]u8 = undefined;
+    const s = std.fmt.bufPrint(&buf, "{d:0>6}", .{passkey % 1000000}) catch return;
+    // scale 2 = 6 glyphs x 12px = 72px wide; center it.
+    oledDrawStrScaled((OLED_WIDTH - 72) / 2, 40, s, 2);
+    oledUpdate();
+}
+
 // ================================================================
 // DISPLAY PAGES
 // ================================================================

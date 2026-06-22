@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Argus — BLE</title>
+<style>
+  :root{
+    --bg:#04060d; --panel:#0a0f1a; --line:#1b2535; --txt:#dfeaf2;
+    --accent:#1eff9d; --gold:#e8c24a; --corrupt:#ff2e2e; --tracker:#9d5cff;
+    --stingray:#ff2e2e; --muted:#8fa3ad;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);
+    font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;padding:14px;}
+  h1{font-size:18px;letter-spacing:2px;margin:0 0 4px;color:#eafff5}
+  .sub{font-size:11px;color:var(--muted);margin-bottom:12px}
+  button{background:var(--panel);color:var(--txt);border:1px solid var(--line);
+    border-radius:8px;padding:9px 14px;font:inherit;cursor:pointer}
+  button:hover{border-color:var(--accent)}
+  button.primary{border-color:var(--accent);color:var(--accent)}
+  .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px}
+  #status{font-size:12px;color:var(--muted)}
+  .banner{border-radius:10px;padding:12px;text-align:center;font-size:15px;
+    letter-spacing:2px;margin-bottom:12px;border:1px solid var(--line)}
+  .b-clear{border-color:var(--accent);color:var(--accent)}
+  .b-aware{border-color:var(--gold);color:var(--gold)}
+  .b-watched,.b-targeted{border-color:var(--corrupt);color:var(--corrupt);
+    animation:pulse 1s infinite}
+  @keyframes pulse{50%{opacity:.5}}
+  .tiles{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:12px}
+  .tile{background:var(--panel);border:1px solid var(--line);border-radius:10px;
+    padding:12px 6px;text-align:center}
+  .tile .n{font-size:24px;font-weight:700;color:#eafff5}
+  .tile .l{font-size:10px;color:var(--muted);margin-top:4px;letter-spacing:1px}
+  .tile.on{border-color:var(--stingray);color:var(--stingray);animation:pulse 1s infinite}
+  .meta{display:flex;justify-content:space-between;font-size:11px;color:var(--muted);
+    margin-bottom:12px}
+  .feed{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:8px}
+  .det{display:flex;justify-content:space-between;gap:8px;padding:6px 4px;
+    border-bottom:1px solid var(--line);font-size:12px}
+  .det:last-child{border-bottom:none}
+  .det .k{font-weight:700}
+  .k-flock_camera,.k-camera{color:var(--gold)}
+  .k-drone{color:#3a7bff}.k-raven{color:var(--corrupt)}
+  .k-airtag,.k-tile,.k-samsung,.k-findmy{color:var(--tracker)}
+  .det .r{color:var(--muted)}
+  .lvl-HIGH,.lvl-CERT{color:var(--corrupt)}.lvl-MED{color:var(--gold)}
+</style>
+</head>
+<body>
+  <h1>ARGUS</h1>
+  <div class="sub">BLE live link &mdash; pairs over Web Bluetooth (Chrome / Android)</div>
+
+  <div class="row">
+    <button id="connect" class="primary">Connect</button>
+    <button id="refresh" disabled>Detections</button>
+    <span id="status">disconnected</span>
+  </div>
+
+  <div id="banner" class="banner b-clear">CLEAR</div>
+
+  <div class="tiles">
+    <div class="tile"><div class="n" id="t-flock">0</div><div class="l">FLOCK</div></div>
+    <div class="tile"><div class="n" id="t-drone">0</div><div class="l">DRONE</div></div>
+    <div class="tile"><div class="n" id="t-raven">0</div><div class="l">RAVEN</div></div>
+    <div class="tile"><div class="n" id="t-camera">0</div><div class="l">CAMERA</div></div>
+    <div class="tile"><div class="n" id="t-track">0</div><div class="l">TRACKERS</div></div>
+    <div class="tile" id="t-stingray"><div class="n">&#9679;</div><div class="l">STINGRAY</div></div>
+  </div>
+
+  <div class="meta">
+    <span id="m-bat">bat --</span>
+    <span id="m-peers">mesh --</span>
+    <span id="m-up">up --</span>
+    <span id="m-fw">fw --</span>
+  </div>
+
+  <div class="feed" id="feed"><div class="det"><span class="r">No detections yet.</span></div></div>
+
+<script>
+const NUS = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
+const RX  = '6e400002-b5a3-f393-e0a9-e50e24dcca9e'; // write (phone -> device)
+const TX  = '6e400003-b5a3-f393-e0a9-e50e24dcca9e'; // notify (device -> phone)
+
+let rxChar = null;
+let rxBuf = '';
+const dec = new TextDecoder();
+const enc = new TextEncoder();
+
+const $ = (id) => document.getElementById(id);
+function setStatus(s){ $('status').textContent = s; }
+
+async function connect(){
+  if (!navigator.bluetooth){ setStatus('Web Bluetooth unsupported'); return; }
+  try{
+    setStatus('requesting...');
+    const dev = await navigator.bluetooth.requestDevice({ filters:[{ services:[NUS] }] });
+    dev.addEventListener('gattserverdisconnected', onDisconnect);
+    setStatus('connecting...');
+    const server = await dev.gatt.connect();
+    const svc = await server.getPrimaryService(NUS);
+    const tx = await svc.getCharacteristic(TX);
+    rxChar = await svc.getCharacteristic(RX);
+    await tx.startNotifications();
+    tx.addEventListener('characteristicvaluechanged', onNotify);
+    setStatus('paired \u2014 live'); // accessing RX triggers OS pairing (enter OLED passkey)
+    $('refresh').disabled = false;
+    $('connect').textContent = 'Connected';
+    // Kick the device once; status is auto-pushed ~1.5s thereafter.
+    send('status');
+  }catch(e){ setStatus('error: ' + e.message); }
+}
+
+function onDisconnect(){
+  setStatus('disconnected'); rxChar = null; rxBuf = '';
+  $('refresh').disabled = true; $('connect').textContent = 'Connect';
+}
+
+async function send(cmd){
+  if (!rxChar) return;
+  try{ await rxChar.writeValue(enc.encode(cmd)); }
+  catch(e){ setStatus('write failed: ' + e.message); }
+}
+
+function onNotify(ev){
+  rxBuf += dec.decode(ev.target.value);
+  let nl;
+  while ((nl = rxBuf.indexOf('\n')) >= 0){
+    const line = rxBuf.slice(0, nl).trim();
+    rxBuf = rxBuf.slice(nl + 1);
+    if (!line) continue;
+    let obj; try{ obj = JSON.parse(line); }catch(_){ continue; }
+    if (Array.isArray(obj)) renderDetections(obj);
+    else if ('uptime_seconds' in obj) renderStatus(obj);
+  }
+}
+
+function renderStatus(s){
+  const sb = s.surv_breakdown || {};
+  $('t-flock').textContent  = sb.flock_camera ?? 0;
+  $('t-drone').textContent  = sb.drone ?? 0;
+  $('t-raven').textContent  = sb.raven ?? 0;
+  $('t-camera').textContent = sb.camera ?? 0;
+  $('t-track').textContent  = s.track_count ?? 0;
+  $('t-stingray').className = 'tile' + (s.stingray_active ? ' on' : '');
+
+  const lvl = s.threat_level || 'clear';
+  const b = $('banner');
+  b.className = 'banner b-' + lvl;
+  b.textContent = lvl.toUpperCase();
+
+  $('m-bat').textContent = 'bat ' + (s.battery_pct ?? '--') + '%';
+  $('m-peers').textContent = 'mesh ' + (s.mesh_peers ?? 0);
+  $('m-up').textContent = 'up ' + fmtUp(s.uptime_seconds ?? 0);
+  $('m-fw').textContent = 'fw ' + (s.firmware_version || '--');
+}
+
+function fmtUp(sec){
+  const h = Math.floor(sec/3600), m = Math.floor((sec%3600)/60);
+  return h ? `${h}h${m}m` : `${m}m`;
+}
+
+function renderDetections(arr){
+  const feed = $('feed');
+  if (!arr.length){ feed.innerHTML = '<div class="det"><span class="r">No detections.</span></div>'; return; }
+  feed.innerHTML = arr.map(d => {
+    const mac = `${d.oui}:${(d.mac_hash||'').replace(/(..)(..)(..)/,'$1:$2:$3')}`;
+    return `<div class="det">
+      <span class="k k-${d.kind}">${(d.kind||'?').toUpperCase()}</span>
+      <span class="r">${mac}</span>
+      <span class="r">${d.rssi}dBm</span>
+      <span class="lvl-${d.level}">${d.score}</span>
+    </div>`;
+  }).join('');
+}
+
+$('connect').addEventListener('click', connect);
+$('refresh').addEventListener('click', () => send('detections'));
+</script>
+</body>
+</html>

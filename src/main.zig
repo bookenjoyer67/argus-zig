@@ -119,6 +119,15 @@ pub extern fn oled_i2c_write(control_byte: u8, data: [*]const u8, len: u32) i32;
 // Returns 1 if data available, 0 if buffer empty.
 pub extern fn ble_scan_poll(addr_out: [*]u8, rssi_out: *i8, adv_type_out: *u8, data_out: [*]u8, data_len_out: *u8) i32;
 
+// BLE GATT phone stream (Nordic UART Service). Advertising + scanning run
+// concurrently; these drive a paired phone's live view (see main/ble.c).
+pub extern fn ble_gatt_is_connected() i32;
+pub extern fn ble_gatt_is_subscribed() i32;
+pub extern fn ble_gatt_send(buf: [*]const u8, len: u32) i32;
+pub extern fn ble_gatt_get_request(out: [*]u8, max: i32) i32;
+pub extern fn ble_gatt_take_passkey(out: *u32) i32;
+pub extern fn ble_gatt_set_enabled(on: i32) i32;
+
 // WiFi promiscuous sniffer — callback pushes simplified 802.11 frames
 // to a ring buffer. wifi_scan_poll drains one result.
 // Returns 1 if data available, 0 if buffer empty.
@@ -129,6 +138,13 @@ pub extern fn wifi_get_frame_count() u32;
 
 // Diagnostic: frames dropped due to ring buffer overflow
 pub extern fn wifi_get_dropped_count() u32;
+
+// Retune the promiscuous sniffer to a specific 802.11 channel (mobile role).
+pub extern fn wifi_set_channel(ch: u8) i32;
+
+// Role check — non-zero if this unit is configured as a base station.
+// Base units lock the radio to the home-WiFi channel and must not hop.
+pub extern fn config_role_is_base() i32;
 
 // Battery ADC — GPIO 1 with 390k/100k divider on Heltec V3.
 // Returns battery voltage in millivolts (e.g. 4100 = 4.1V).
@@ -341,6 +357,49 @@ pub var stealth_mode: bool = false;
 /// LED error pattern at runtime so a headless device still reports the fault.
 pub var init_failed: bool = false;
 
+// ================================================================
+// WiFi CHANNEL HOPPING (mobile role)
+// ================================================================
+//
+// The promiscuous sniffer only ever receives frames on the channel the
+// radio is tuned to. Without hopping it sits on a single channel and
+// misses APs/cameras everywhere else. Mobile units rotate through the
+// channel list below, dwelling longer on the common AP channels (1/6/11)
+// where Flock cameras and most beacons live, and briefly on the rest.
+//
+// Base-station units leave the radio locked to the home-WiFi channel
+// (the STA connection pins it) and never hop, so the dashboard link
+// stays up. hopping_enabled is set once at startup from the role.
+//
+// Default list is channels 1-11 (US regulatory domain). For EU/JP,
+// append 12, 13 here AND set the country via esp_wifi_set_country —
+// esp_wifi_set_channel(12/13) fails under the default country.
+const HOP_CHANNELS = [_]u8{ 1, 6, 11, 2, 3, 4, 5, 7, 8, 9, 10 };
+const DWELL_PRIMARY_MS: u32 = 500; // 1/6/11
+const DWELL_SECONDARY_MS: u32 = 200; // all others
+var hop_index: usize = 0;
+var last_hop_ms: u32 = 0;
+var hopping_enabled: bool = false;
+
+// ================================================================
+// BLE PHONE STREAM (NUS) — render api.zig JSON, push over GATT notify
+// ================================================================
+//
+// Rendered in the main-loop task (single owner of tracker/mesh state),
+// then handed to main/ble.c which chunks it into MTU-sized notifications.
+// Each message is one JSON object/array terminated by a newline so the
+// phone client can frame the stream.
+var ble_json_buf: [8192]u8 = undefined;
+var ble_last_push_ms: u32 = 0;
+
+/// Render a JSON body via one of the api.zig functions and stream it,
+/// newline-framed, to the connected/paired phone.
+fn bleStream(render: *const fn ([*]u8, u32) callconv(.c) u32) void {
+    const n = render(&ble_json_buf, ble_json_buf.len - 1);
+    ble_json_buf[n] = '\n';
+    _ = ble_gatt_send(&ble_json_buf, n + 1);
+}
+
 /// Only threats seen within this window drive the LED (scores never decay).
 const THREAT_RECENCY_MS: u32 = 15000;
 
@@ -500,6 +559,13 @@ export fn zig_main() callconv(.c) void {
 
     // Restore session counter from SPIFFS
     scanner.restoreSession();
+
+    // Enable WiFi channel hopping on mobile units only. Base units keep the
+    // radio on the home-WiFi channel for the dashboard STA link.
+    hopping_enabled = (config_role_is_base() == 0);
+    if (hopping_enabled) {
+        _ = wifi_set_channel(HOP_CHANNELS[0]);
+    }
 
     // ================================================================
     // MAIN LOOP
@@ -683,6 +749,9 @@ export fn zig_main() callconv(.c) void {
                         } else {
                             display.oledDisplayOn();
                         }
+                        // Stealth silences BLE advertising too (and drops any
+                        // active phone connection); restored when stealth ends.
+                        _ = ble_gatt_set_enabled(if (stealth_mode) @as(i32, 0) else 1);
                         while (buttonPressed()) {
                             delayMs(10);
                         }
@@ -693,6 +762,48 @@ export fn zig_main() callconv(.c) void {
                 }
 
                 if (!stealth_mode) display.drawPage();
+            }
+        }
+
+        // --- WiFi channel hop ---
+        // Mobile role only. Non-blocking: retune when the per-channel dwell
+        // elapses; scanning/BLE/display/mesh keep running in between.
+        if (hopping_enabled) {
+            const ch = HOP_CHANNELS[hop_index];
+            const dwell = if (ch == 1 or ch == 6 or ch == 11) DWELL_PRIMARY_MS else DWELL_SECONDARY_MS;
+            if ((tick_ms -% last_hop_ms) >= dwell) {
+                hop_index = (hop_index + 1) % HOP_CHANNELS.len;
+                _ = wifi_set_channel(HOP_CHANNELS[hop_index]);
+                last_hop_ms = tick_ms;
+            }
+        }
+
+        // --- BLE phone stream (NUS) ---
+        // Show the pairing passkey on the OLED while pairing; otherwise, once
+        // a phone is paired + subscribed, push status ~1.5s and answer
+        // on-demand commands (detections/mesh/cameras).
+        var passkey: u32 = undefined;
+        if (ble_gatt_take_passkey(&passkey) != 0 and !stealth_mode) {
+            display.drawPasskey(passkey);
+            last_draw_ms = tick_ms;
+        } else if (ble_gatt_is_subscribed() != 0) {
+            var cmd: [64]u8 = undefined;
+            const clen = ble_gatt_get_request(&cmd, cmd.len);
+            if (clen > 0) {
+                const c = cmd[0..@intCast(clen)];
+                if (std.mem.startsWith(u8, c, "detections")) {
+                    bleStream(&api.zig_api_detections);
+                } else if (std.mem.startsWith(u8, c, "mesh")) {
+                    bleStream(&api.zig_api_mesh);
+                } else if (std.mem.startsWith(u8, c, "cameras")) {
+                    bleStream(&api.zig_api_cameras);
+                } else {
+                    bleStream(&api.zig_api_status);
+                }
+            }
+            if ((tick_ms -% ble_last_push_ms) >= 1500) {
+                bleStream(&api.zig_api_status);
+                ble_last_push_ms = tick_ms;
             }
         }
 

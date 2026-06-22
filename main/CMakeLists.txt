@@ -24,6 +24,8 @@ idf_component_register(
         "${IDF_PATH}/components/bt/host/nimble/nimble/nimble/include"
         "${IDF_PATH}/components/bt/host/nimble/nimble/nimble/host/include"
         "${IDF_PATH}/components/bt/host/nimble/nimble/nimble/host/services/gap/include"
+        "${IDF_PATH}/components/bt/host/nimble/nimble/nimble/host/services/gatt/include"
+        "${IDF_PATH}/components/bt/host/nimble/nimble/nimble/host/store/config/include"
         "${IDF_PATH}/components/bt/host/nimble/nimble/nimble/host/util/include"
         "${IDF_PATH}/components/bt/porting/npl/freertos/include"
         "${IDF_PATH}/components/bt/host/nimble/port/include"

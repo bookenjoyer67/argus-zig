@@ -275,3 +275,11 @@ uint32_t wifi_get_frame_count(void) {
 uint32_t wifi_get_dropped_count(void) {
     return wifi_ring_dropped;
 }
+
+// Retune the promiscuous sniffer to a specific 802.11 channel.
+// Called from the Zig main loop's channel-hop scheduler (mobile role only).
+// Base-station role leaves the radio on the STA-connected channel and
+// never calls this. Returns the esp_err_t (0 = ESP_OK).
+int wifi_set_channel(uint8_t ch) {
+    return esp_wifi_set_channel(ch, WIFI_SECOND_CHAN_NONE);
+}
