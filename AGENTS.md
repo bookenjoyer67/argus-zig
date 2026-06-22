@@ -44,16 +44,18 @@ main/gps.c               ← NEO-6M UART driver
 main/main.c (oled/gpio)  ← I2C OLED driver + GPIO wrappers + battery ADC + LED PWM
 
 src/main.zig     998L    ← Entry point, main loop, extern fns, OUI_DB (vendor/category), tracker table,
-                           WiFi channel hopping, BLE GATT stream push
-src/scanner.zig  774L    ← BLE/WiFi classifiers, scoring, NMEA parser, CSV logging,
-                           BLE_SIGNATURES table, Stingray burst detector, OUI-only cap
-src/display.zig  791L    ← SSD1306 driver, 5x7 font, 8-page UI (incl. Devices), LED alerts, passkey screen
-src/mesh.zig     376L    ← LoRa mesh packets, CRC, heartbeats, peer/camera map
-src/api.zig      242L    ← JSON renderers (status/detections/mesh/cameras/config)
-src/config.zig    30L    ← Device config struct, SPIFFS load/save
+                           src/main.zig    1020L    ← Entry point, main loop, extern fns, OUI_DB (vendor + category)
+                           src/scanner.zig  768L    ← BLE/WiFi classifiers, scoring, NMEA parser, CSV logging,
+                                                      BLE_SIGNATURES table, Stingray burst detector, OUI-only cap
+                           src/display.zig  804L    ← SSD1306 driver, 5x7 font, 8-page UI (inc. All Devices), LED alerts
+                           src/mesh.zig     376L    ← LoRa mesh: CRC-8, heartbeats, dedup, camera map, peer table
+                           src/api.zig      242L    ← Dashboard API endpoints (/api/status, /api/detections, /api/mesh, /api/cameras)
+                           src/config.zig    30L    ← Device config struct, SPIFFS load/save
 
-main/httpd.c     263L    ← ESP-IDF HTTP server, setup page handler, dashboard routes
-main/config.c    131L    ← SPIFFS flat key=value config read/write (C helpers)
+                           main/httpd.c     276L    ← ESP-IDF HTTP server, setup page handler, dashboard routes
+                           main/config.c    131L    ← SPIFFS JSON config read/write (C helpers)
+                           main/main.c      364L    ← app_main, OLED I2C, GPIO wrappers, LEDC PWM, battery ADC
+                           main/lora.c      404L    ← SX1262 LoRa driver (full opcode set)
 
 web/dashboard.html 433L  ← Base-station dashboard (theme, map, vanilla JS polling)
 web/ble.html       339L  ← BLE phone client (Web Bluetooth, hosted on GitHub Pages)
