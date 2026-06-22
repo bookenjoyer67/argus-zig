@@ -41,6 +41,7 @@ pub const RAVEN_FW_1_3: u16      = 1 << 11; // UUIDs 0x34xx/0x3500
 pub const METHOD_CAM_SSID: u16   = 1 << 12; // SSID contains camera keyword (30 pts)
 pub const METHOD_SIDEWALK: u16    = 1 << 13; // Amazon Sidewalk device (50 pts)
 pub const METHOD_WIFI_DRONE: u16  = 1 << 14; // WiFi Remote ID tag 221 (85 pts)
+pub const METHOD_RAVEN_LOW: u16   = 1 << 15; // Raven 1 UUID — possible, lower confidence (40 pts)
 
 /// Carrier probe request counter — SSIDs like "attwifi", "VerizonWiFi", etc.
 /// A spike in these from different MACs can indicate an IMSI catcher (Stingray)
@@ -119,6 +120,7 @@ pub fn computeScore(methods: u16, rssi: i8, mac: [6]u8) u8 {
     if (methods & METHOD_MANUF != 0)       { score += 60; count += 1; }
     if (methods & METHOD_FINDMY != 0)      { score += 70; count += 1; }
     if (methods & METHOD_RAVEN != 0)       { score += 70; count += 1; }
+    if (methods & METHOD_RAVEN_LOW != 0)   { score += 40; count += 1; }
     if (methods & METHOD_TILE != 0)        { score += 45; count += 1; }
     if (methods & METHOD_DRONE != 0)       { score += 60; count += 1; }
     if (methods & METHOD_SIDEWALK != 0)    { score += 50; count += 1; }
@@ -214,8 +216,8 @@ pub fn classifyBle(adv_data: []const u8) ClassResult {
         pos += 1 + len;
     }
 
-    // Raven classification: 1+ Raven service UUIDs = confirmed
-    if (raven_uuids >= 1) {
+    // Raven classification: 2+ UUIDs = confirmed, 1 UUID = possible (generic 0x180A alone is not reliable)
+    if (raven_uuids >= 2) {
         kind = .raven;
         methods |= METHOD_RAVEN;
         switch (raven_fw_major) {
@@ -224,6 +226,9 @@ pub fn classifyBle(adv_data: []const u8) ClassResult {
             1 => methods |= RAVEN_FW_1_1,
             else => {},
         }
+    } else if (raven_uuids == 1) {
+        kind = .raven;
+        methods |= METHOD_RAVEN_LOW;
     }
 
     return .{ .kind = kind, .methods = methods };
@@ -510,12 +515,16 @@ pub fn logCsv(mac: [6]u8, rssi: i8) void {
     }
 }
 
+/// Drone model name extracted from WiFi Remote ID Self-ID message.
+/// Set by parseDroneRemoteId(), read by display.zig for threats + proximity pages.
+pub var drone_model_buf: [24]u8 = [_]u8{0} ** 24;
+
 /// Parse ASTM F3411 WiFi Remote ID payload from tag 221 IE.
 /// Message format: [type:1B][flags:1B][data...]
 /// Type 0: Basic ID (drone serial)
 /// Type 1: Location (lat/lon/alt/speed)
 /// Type 2: Self-ID (free text, typically "DJI Mini 3 Pro")
-/// Returns methods flags to OR into the classification result.
+/// Returns detection method flags.
 pub fn parseDroneRemoteId(rid: []const u8) u16 {
     if (rid.len < 2) return 0;
 
@@ -523,10 +532,12 @@ pub fn parseDroneRemoteId(rid: []const u8) u16 {
     const payload = rid[1..];
 
     if (msg_type == 2 and payload.len > 0) {
-        // Self-ID message — drone model name in free text
-        // Most DJI drones broadcast "DJI Mini 3 Pro" or similar
-        const txt = payload[0..@min(payload.len, @as(usize, @intCast(payload[0]))) + 1];
-        _ = txt; // model name text — for display, we just flag the detection
+        const txt_len = @min(payload.len, @as(usize, @intCast(payload[0]))) + 1;
+        const txt = payload[0..txt_len];
+        // Store model name for display
+        const copy_len = @min(txt.len, drone_model_buf.len - 1);
+        @memcpy(drone_model_buf[0..copy_len], txt[0..copy_len]);
+        drone_model_buf[copy_len] = 0;
         return METHOD_WIFI_DRONE;
     }
 

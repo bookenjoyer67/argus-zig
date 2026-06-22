@@ -388,9 +388,11 @@ fn drawThreats() void {
         const ks = kindStr(main.trackers[i].kind);
         const s = scoreLevel(main.trackers[i].score);
         const fw = if (main.trackers[i].kind == .raven) ravenFwStr(main.trackers[i].methods) else "";
-        _ = std.fmt.bufPrint(&buf, "{X:0<2}:{X:0<2} {s}{s}{d} {s}", .{
+        const model = if (main.trackers[i].kind == .drone and scanner.drone_model_buf[0] != 0)
+            std.mem.sliceTo(&scanner.drone_model_buf, 0) else "";
+        _ = std.fmt.bufPrint(&buf, "{X:0<2}:{X:0<2} {s}{s}{s}{d} {s}", .{
             main.trackers[i].mac[0], main.trackers[i].mac[1],
-            ks, fw, main.trackers[i].rssi, s,
+            ks, fw, model, main.trackers[i].rssi, s,
         }) catch continue;
         oledDrawStr(0, y, &buf);
         row += 1;
@@ -427,6 +429,12 @@ fn drawProximity() void {
     const mac_str = formatMac(t.mac, buf[0..17]);
     oledDrawStr(0, 12, mac_str);
     oledDrawStr(0, 22, kindStr(t.kind));
+
+    // Drone model name if available (WiFi Remote ID Self-ID)
+    if (t.kind == .drone and scanner.drone_model_buf[0] != 0) {
+        const model = std.mem.sliceTo(&scanner.drone_model_buf, 0);
+        oledDrawStr(30, 22, model);
+    }
 
     // Score badge
     var score_buf: [16]u8 = undefined;
