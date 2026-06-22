@@ -256,6 +256,7 @@ const TrackerType = enum(u8) {
     flock_camera,
     wifi_device,
     drone,          // Drone Remote ID (ASTM F3411)
+    raven,          // Raven/ShotSpotter gunshot sensor (BLE UUID set)
     unknown,
     _,
 };
@@ -318,6 +319,7 @@ fn scoreLevel(score: u8) []const u8 {
 fn classifyBle(adv_data: []const u8) ClassResult {
     var methods: u16 = 0;
     var kind: TrackerType = .unknown;
+    var raven_uuids: u8 = 0; // count of Raven UUIDs found
 
     var pos: usize = 0;
     while (pos + 1 < adv_data.len) {
@@ -355,6 +357,11 @@ fn classifyBle(adv_data: []const u8) ClassResult {
                     kind = .drone;
                     methods |= METHOD_DRONE;
                 }
+                // Raven/ShotSpotter gunshot sensor UUIDs
+                if (uuid == 0x180A or uuid == 0x3100 or uuid == 0x3200 or
+                    uuid == 0x3300 or uuid == 0x3400 or uuid == 0x3500) {
+                    raven_uuids += 1;
+                }
             }
         }
 
@@ -364,6 +371,12 @@ fn classifyBle(adv_data: []const u8) ClassResult {
         }
 
         pos += 1 + len;
+    }
+
+    // Raven classification: 1+ service UUIDs = confirmed
+    if (raven_uuids >= 1) {
+        kind = .raven;
+        methods |= METHOD_RAVEN;
     }
 
     return .{ .kind = kind, .methods = methods };
@@ -962,6 +975,7 @@ fn kindStr(kind: TrackerType) []const u8 {
         .flock_camera => "FLK",
         .wifi_device => "WIF",
         .drone => "DRN",
+        .raven => "RAV",
         .unknown => "???",
         else => "???",
     };
@@ -978,10 +992,12 @@ fn drawSummary() void {
     var alpr_count: u32 = 0;
     var ble_count: u32 = 0;
     var drone_count: u32 = 0;
+    var raven_count: u32 = 0;
     for (0..tracker_count) |i| {
         switch (trackers[i].kind) {
             .flock_camera, .wifi_device => alpr_count += 1,
             .drone => drone_count += 1,
+            .raven => raven_count += 1,
             else => ble_count += 1,
         }
     }
@@ -995,6 +1011,8 @@ fn drawSummary() void {
     oledDrawInt(108, 18, @intCast(drone_count));
     oledDrawStr(0, 28, "BLE:");
     oledDrawInt(48, 28, @intCast(ble_count));
+    oledDrawStr(78, 28, "RAV:");
+    oledDrawInt(108, 28, @intCast(raven_count));
     oledDrawStr(0, 36, "OUI:");
     oledDrawInt(48, 36, @intCast(KNOWN_OUIS_COUNT));
     drawBatteryBar(0, 44, 40, 8);
