@@ -4,81 +4,157 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Argus Dashboard</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <style>
+  /* === Argus, the Emerald Star — fallen-titan theme === */
   :root {
-    --bg:#0a0a1a; --surface:#1a1a2e; --text:#e0e0e0; --accent:#ff1493;
-    --flock:#ff4444; --drone:#4488ff; --raven:#ff44ff; --camera:#ff8844;
-    --tracker:#44ff44; --stingray:#ff0000;
-    --green:#00cc66; --yellow:#ffcc00; --orange:#ff8800; --red:#ff3333;
+    --bg:#04060d; --surface:rgba(12,19,32,.82); --text:#dfeae4;
+    --accent:#1eff9d;            /* the emerald star / fel glow */
+    --gold:#e8c24a;              /* titan armor */
+    --soul:#3a7bff;              /* Argus' deep-blue skin */
+    --void:#9d5cff;              /* Twisting Nether */
+    --corrupt:#ff2e2e;           /* Sargeras' corruption */
+    --flock:var(--corrupt); --drone:var(--soul); --raven:var(--void);
+    --camera:var(--gold); --tracker:#37e0c0; --stingray:var(--corrupt);
+    --green:var(--accent); --yellow:var(--gold); --orange:#ff9a3c; --red:var(--corrupt);
   }
   * { box-sizing:border-box; }
-  body { margin:0; background:var(--bg); color:var(--text);
-         font-family:system-ui,sans-serif; padding:16px 16px 64px; }
+  body { margin:0; color:var(--text); font-family:system-ui,sans-serif;
+         padding:16px 16px 64px;
+         background:
+           radial-gradient(1px 1px at 18% 28%, rgba(255,255,255,.55), transparent),
+           radial-gradient(1px 1px at 72% 62%, rgba(255,255,255,.4), transparent),
+           radial-gradient(1px 1px at 42% 82%, rgba(120,255,200,.45), transparent),
+           radial-gradient(1px 1px at 86% 18%, rgba(255,255,255,.35), transparent),
+           radial-gradient(1px 1px at 56% 12%, rgba(180,200,255,.35), transparent),
+           radial-gradient(1px 1px at 32% 55%, rgba(255,255,255,.3), transparent),
+           radial-gradient(1000px 620px at 50% -12%, rgba(30,255,157,.12), transparent 70%),
+           var(--bg);
+         background-attachment:fixed; }
   mono, .mono { font-family:ui-monospace,Menlo,Consolas,monospace; }
-  h1 { letter-spacing:4px; margin:0 0 16px; font-size:22px; }
+  h1 { letter-spacing:6px; margin:0 0 16px; font-size:24px; color:#eafff5; font-weight:700;
+       text-shadow:0 0 8px rgba(30,255,157,.7), 0 0 22px rgba(30,255,157,.35);
+       animation:starpulse 4s ease-in-out infinite; }
+  @keyframes starpulse { 50% { text-shadow:0 0 12px rgba(30,255,157,.95), 0 0 30px rgba(30,255,157,.5); } }
   h2 { font-size:13px; text-transform:uppercase; letter-spacing:2px;
-       opacity:.6; margin:0 0 10px; }
-  .panel { background:var(--surface); border-radius:12px; padding:16px;
-           margin-bottom:16px; }
+       color:rgba(30,255,157,.7); margin:0 0 10px; }
+  .panel { background:var(--surface); border-radius:12px; padding:16px; margin-bottom:16px;
+           border:1px solid rgba(232,194,74,.25);
+           box-shadow:inset 0 0 0 1px rgba(30,255,157,.06), 0 4px 24px rgba(0,0,0,.55); }
   .grid { display:grid; grid-template-columns:repeat(6,1fr); gap:10px; }
   .tile { border-radius:10px; padding:14px 6px; text-align:center;
-          background:#12122a; border:2px solid #222; cursor:pointer; }
-  .tile .n { font-size:28px; font-weight:700; }
+          background:rgba(8,14,24,.7); border:1px solid #1d2a3a; cursor:pointer;
+          transition:transform .12s, box-shadow .12s, border-color .12s; }
+  .tile:hover { transform:translateY(-2px); border-color:var(--gold);
+                box-shadow:0 0 14px rgba(232,194,74,.25); }
+  .tile .n { font-size:28px; font-weight:700; color:#eafff5; }
   .tile .l { font-size:11px; opacity:.7; margin-top:4px; letter-spacing:1px; }
-  .tile.green { border-color:var(--green); }
-  .tile.yellow { border-color:var(--yellow); }
-  .tile.red { border-color:var(--red); }
-  .tile.sr-off { border-color:#444; opacity:.5; }
-  .tile.sr-on { border-color:var(--stingray); animation:pulse 1s infinite; }
-  @keyframes pulse { 50% { opacity:.4; } }
+  .tile.green { border-color:var(--accent); box-shadow:0 0 12px rgba(30,255,157,.25); }
+  .tile.yellow { border-color:var(--gold); box-shadow:0 0 12px rgba(232,194,74,.25); }
+  .tile.red { border-color:var(--corrupt); box-shadow:0 0 12px rgba(255,46,46,.3); }
+  .tile.sr-off { border-color:#2a3340; opacity:.5; }
+  .tile.sr-on { border-color:var(--stingray); animation:corruptpulse 1s infinite; }
+  @keyframes corruptpulse { 0%,100% { box-shadow:0 0 6px rgba(255,46,46,.4); }
+                            50% { box-shadow:0 0 20px rgba(255,46,46,.9); } }
   table { width:100%; border-collapse:collapse; font-size:13px; }
-  td { padding:5px 6px; border-bottom:1px solid #222; }
+  td { padding:5px 6px; border-bottom:1px solid rgba(255,255,255,.06); }
   .k-flock,.k-wifi_device { color:var(--flock); }
   .k-drone { color:var(--drone); }
   .k-raven { color:var(--raven); }
   .k-camera,.k-flock_camera { color:var(--camera); }
   .k-airtag,.k-tile,.k-samsung,.k-findmy { color:var(--tracker); }
-  .peer .dot { color:var(--green); }
+  .peer .dot { color:var(--accent); text-shadow:0 0 6px rgba(30,255,157,.7); }
   .peer.off { opacity:.5; }
-  .peer.off .dot { color:#666; }
-  .bar { position:fixed; left:0; right:0; bottom:0; background:#070714;
-         border-top:1px solid #222; padding:10px 16px; display:flex;
-         gap:16px; align-items:center; font-size:13px; flex-wrap:wrap; }
-  .pill { padding:3px 12px; border-radius:20px; font-weight:600; font-size:12px;
+  .peer.off .dot { color:#5a6a72; text-shadow:none; }
+  .bar { position:fixed; left:0; right:0; bottom:0; background:rgba(4,7,14,.95);
+         border-top:1px solid rgba(30,255,157,.25); padding:10px 16px; display:flex;
+         gap:16px; align-items:center; font-size:13px; flex-wrap:wrap;
+         backdrop-filter:blur(4px); }
+  .pill { padding:3px 12px; border-radius:20px; font-weight:700; font-size:12px;
           text-transform:uppercase; letter-spacing:1px; }
-  .pill.clear { background:var(--green); color:#000; }
-  .pill.aware { background:var(--yellow); color:#000; }
-  .pill.watched { background:var(--orange); color:#000; }
-  .pill.targeted { background:var(--red); color:#fff; }
-  .bar a, .bar button { color:var(--accent); background:none; border:1px solid var(--accent);
+  .pill.clear { background:var(--accent); color:#04140d; box-shadow:0 0 12px rgba(30,255,157,.4); }
+  .pill.aware { background:var(--gold); color:#1a1400; }
+  .pill.watched { background:var(--orange); color:#1a0e00; }
+  .pill.targeted { background:var(--corrupt); color:#fff; animation:corruptpulse 1s infinite; }
+  .bar a, .bar button { color:var(--accent); background:none; border:1px solid rgba(30,255,157,.5);
           border-radius:6px; padding:5px 10px; cursor:pointer; text-decoration:none;
-          font-size:12px; }
+          font-size:12px; transition:all .12s; }
+  .bar a:hover, .bar button:hover { color:var(--gold); border-color:var(--gold);
+          box-shadow:0 0 10px rgba(232,194,74,.3); }
   .spacer { flex:1; }
+  #tabs { display:flex; gap:0; margin-bottom:16px; }
+  #tabs button { padding:8px 18px; background:rgba(12,19,32,.7); color:var(--text);
+          border:1px solid #1d2a3a; cursor:pointer; font-size:13px; letter-spacing:1px;
+          text-transform:uppercase; transition:all .12s; }
+  #tabs button:hover { color:var(--gold); border-color:var(--gold); }
+  #tabs button.active { background:var(--accent); color:#04140d; border-color:var(--accent);
+          box-shadow:0 0 14px rgba(30,255,157,.4); }
+  #tabs button:first-child { border-radius:8px 0 0 8px; }
+  #tabs button:last-child { border-radius:0 8px 8px 0; }
+  #map { width:100%; height:60vh; border-radius:10px; border:1px solid rgba(232,194,74,.4);
+         box-shadow:inset 0 0 0 1px rgba(30,255,157,.1); }
+  #map-stats { padding:10px 4px 0; font-size:12px; opacity:.7; }
+  .leaflet-popup-content { font-size:13px; line-height:1.5; color:#111; }
+  .leaflet-control-attribution { background:rgba(4,7,14,.7) !important; color:#8fa3ad !important;
+          font-size:10px !important; }
+  .leaflet-control-attribution a { color:var(--accent) !important; }
+  #loc-editor { display:flex; gap:10px; align-items:center; margin-top:12px; flex-wrap:wrap; }
+  #loc-editor button { color:var(--accent); background:none; border:1px solid rgba(30,255,157,.5);
+          border-radius:6px; padding:5px 10px; cursor:pointer; font-size:12px; transition:all .12s; }
+  #loc-editor button:hover { color:var(--gold); border-color:var(--gold); }
+  #loc-editor button.active { background:var(--accent); color:#04140d; }
+  #loc-readout { font-size:12px; opacity:.8; }
+  .home-pin { background:var(--accent); border:2px solid #eafff5; border-radius:50%;
+          box-shadow:0 0 10px rgba(30,255,157,.9); }
 </style>
 </head>
 <body>
   <h1>ARGUS</h1>
 
-  <div class="panel">
-    <h2>Threat Grid</h2>
-    <div class="grid" id="grid">
-      <div class="tile" data-filter="flock"><div class="n" id="t-flock">0</div><div class="l">FLOCK</div></div>
-      <div class="tile" data-filter="drone"><div class="n" id="t-drone">0</div><div class="l">DRONE</div></div>
-      <div class="tile" data-filter="raven"><div class="n" id="t-raven">0</div><div class="l">RAVEN</div></div>
-      <div class="tile" data-filter="camera"><div class="n" id="t-camera">0</div><div class="l">CAMERA</div></div>
-      <div class="tile" data-filter="tracker"><div class="n" id="t-track">0</div><div class="l">TRACKERS</div></div>
-      <div class="tile sr-off" id="t-stingray"><div class="n">&#9679;</div><div class="l">STINGRAY</div></div>
+  <div id="tabs">
+    <button class="active" onclick="showView('threats', this)">Threats</button>
+    <button onclick="showView('map', this)">Map</button>
+    <button onclick="showView('mesh', this)">Mesh</button>
+  </div>
+
+  <div id="view-threats">
+    <div class="panel">
+      <h2>Threat Grid</h2>
+      <div class="grid" id="grid">
+        <div class="tile" data-filter="flock"><div class="n" id="t-flock">0</div><div class="l">FLOCK</div></div>
+        <div class="tile" data-filter="drone"><div class="n" id="t-drone">0</div><div class="l">DRONE</div></div>
+        <div class="tile" data-filter="raven"><div class="n" id="t-raven">0</div><div class="l">RAVEN</div></div>
+        <div class="tile" data-filter="camera"><div class="n" id="t-camera">0</div><div class="l">CAMERA</div></div>
+        <div class="tile" data-filter="tracker"><div class="n" id="t-track">0</div><div class="l">TRACKERS</div></div>
+        <div class="tile sr-off" id="t-stingray"><div class="n">&#9679;</div><div class="l">STINGRAY</div></div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Live Feed</h2>
+      <table><tbody id="feed"><tr><td>Waiting for detections...</td></tr></tbody></table>
     </div>
   </div>
 
-  <div class="panel">
-    <h2>Live Feed</h2>
-    <table><tbody id="feed"><tr><td>Waiting for detections...</td></tr></tbody></table>
+  <div id="view-map" style="display:none">
+    <div class="panel">
+      <h2>Camera Map</h2>
+      <div id="map"></div>
+      <div id="map-stats">No cameras mapped yet.</div>
+      <div id="loc-editor">
+        <button id="loc-toggle" type="button" onclick="toggleLocEdit(this)">Set base location</button>
+        <span id="loc-readout" class="mono"></span>
+        <button id="loc-save" type="button" onclick="saveLocation()" style="display:none">Save</button>
+      </div>
+    </div>
   </div>
 
-  <div class="panel">
-    <h2 id="mesh-title">Mesh</h2>
-    <div id="mesh">No peers heard.</div>
+  <div id="view-mesh" style="display:none">
+    <div class="panel">
+      <h2 id="mesh-title">Mesh</h2>
+      <div id="mesh">No peers heard.</div>
+    </div>
   </div>
 
   <div class="bar">
@@ -91,8 +167,19 @@
   </div>
 
 <script>
-const POLL_STATUS_MS = 3000, POLL_FEED_MS = 10000, POLL_MESH_MS = 30000;
+const POLL_STATUS_MS = 3000, POLL_FEED_MS = 10000, POLL_MESH_MS = 30000, POLL_CAMERAS_MS = 30000;
 let feedFilter = null;
+let map = null, markers = {}, mapCentered = false;
+let baseLat = NaN, baseLon = NaN;
+let homeMarker = null, editingLocation = false, pendingLoc = null;
+const homeIcon = L.divIcon({ className:'home-pin', html:'', iconSize:[18,18], iconAnchor:[9,9] });
+function r6(x) { return Math.round(x * 1e6) / 1e6; }
+
+const CLASS_COLORS = {
+  flock_camera:'#ff4444', wifi_device:'#ff8844', drone:'#4488ff',
+  raven:'#ff44ff', camera:'#ff8844',
+};
+function markerColor(k) { return CLASS_COLORS[k] || '#888888'; }
 
 function tileClass(n) { return n === 0 ? 'green' : n <= 2 ? 'yellow' : 'red'; }
 function setTile(id, n) {
@@ -108,6 +195,154 @@ function ago(s) {
   if (s < 60) return s + 's ago';
   if (s < 3600) return Math.floor(s/60) + 'm ago';
   return Math.floor(s/3600) + 'h ago';
+}
+
+function showView(name, btn) {
+  document.querySelectorAll('[id^="view-"]').forEach(el => el.style.display = 'none');
+  document.getElementById('view-' + name).style.display = 'block';
+  document.querySelectorAll('#tabs button').forEach(b => b.classList.remove('active'));
+  if (btn) btn.classList.add('active');
+  if (name === 'map') {
+    initMap();
+    map.invalidateSize();
+    pollCameras();
+  }
+}
+
+function initMap() {
+  if (map) return;
+  map = L.map('map').setView([20, 0], 2); // neutral world view until a location is known
+  map.attributionControl.setPrefix(false); // drop the "Leaflet" flag, keep OSM credit
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '&copy; OpenStreetMap contributors',
+    maxZoom: 19
+  }).addTo(map);
+  // Center on the configured base location if we already have it.
+  if (isFinite(baseLat) && isFinite(baseLon)) {
+    map.setView([baseLat, baseLon], 14);
+    mapCentered = true;
+    placeHome(baseLat, baseLon);
+  }
+  // Click the map to set the base location while in edit mode.
+  map.on('click', (e) => {
+    if (editingLocation) setPending(e.latlng.lat, e.latlng.lng);
+  });
+}
+
+function placeHome(lat, lon) {
+  if (homeMarker) { homeMarker.setLatLng([lat, lon]); return; }
+  homeMarker = L.marker([lat, lon], { icon: homeIcon, draggable: true, zIndexOffset: 1000 })
+    .addTo(map).bindTooltip('Base location');
+  homeMarker.on('dragend', () => {
+    const ll = homeMarker.getLatLng();
+    setPending(ll.lat, ll.lng);
+  });
+  if (homeMarker.dragging && !editingLocation) homeMarker.dragging.disable();
+}
+
+function setPending(lat, lon) {
+  pendingLoc = { lat: r6(lat), lon: r6(lon) };
+  placeHome(pendingLoc.lat, pendingLoc.lon);
+  document.getElementById('loc-readout').textContent =
+    `${pendingLoc.lat.toFixed(5)}, ${pendingLoc.lon.toFixed(5)}`;
+  document.getElementById('loc-save').style.display = '';
+}
+
+function toggleLocEdit(btn) {
+  editingLocation = !editingLocation;
+  btn.classList.toggle('active', editingLocation);
+  btn.textContent = editingLocation ? 'Click map / drag pin\u2026' : 'Set base location';
+  if (editingLocation && !homeMarker) setPending(map.getCenter().lat, map.getCenter().lng);
+  if (homeMarker && homeMarker.dragging) {
+    if (editingLocation) homeMarker.dragging.enable(); else homeMarker.dragging.disable();
+  }
+}
+
+async function saveLocation() {
+  if (!pendingLoc) return;
+  const body = new URLSearchParams({ lat: String(pendingLoc.lat), lon: String(pendingLoc.lon) });
+  const readout = document.getElementById('loc-readout');
+  try {
+    await fetch('/api/location', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: body.toString()
+    });
+    baseLat = pendingLoc.lat; baseLon = pendingLoc.lon;
+    readout.textContent = `Saved: ${baseLat.toFixed(5)}, ${baseLon.toFixed(5)}`;
+    document.getElementById('loc-save').style.display = 'none';
+    editingLocation = false;
+    const tb = document.getElementById('loc-toggle');
+    tb.classList.remove('active'); tb.textContent = 'Set base location';
+    if (homeMarker && homeMarker.dragging) homeMarker.dragging.disable();
+  } catch (e) {
+    readout.textContent = 'Save failed';
+  }
+}
+
+async function pollConfig() {
+  try {
+    const cfg = await (await fetch('/api/config')).json();
+    const la = parseFloat(cfg.lat), lo = parseFloat(cfg.lon);
+    if (isFinite(la) && isFinite(lo)) {
+      baseLat = la; baseLon = lo;
+      if (map && !mapCentered) { map.setView([la, lo], 14); mapCentered = true; }
+      if (map) placeHome(la, lo);
+    }
+  } catch (e) {}
+}
+
+function popupHtml(c) {
+  return `<b>${(c.kind || 'unknown').toUpperCase()}</b><br>`
+    + `OUI: ${c.oui}<br>`
+    + `Seen: ${c.count}x<br>`
+    + `By: ${c.reporters} peer(s)<br>`
+    + `Last: ${ago(c.last_seen_seconds)}<br>`
+    + `RSSI: ${c.best_rssi} dBm`;
+}
+
+function updateMarkers(cams) {
+  if (!map) return;
+  const seen = new Set();
+  for (const c of cams) {
+    if (c.lat === 0 && c.lon === 0) continue; // no GPS yet
+    seen.add(c.id);
+    const lat = c.lat / 1e6, lon = c.lon / 1e6;
+    const radius = Math.min(24, Math.max(8, c.count));
+    if (markers[c.id]) {
+      markers[c.id].setLatLng([lat, lon]);
+      markers[c.id].setRadius(radius);
+      markers[c.id].setStyle({ fillColor: markerColor(c.kind) });
+      markers[c.id].getPopup().setContent(popupHtml(c));
+    } else {
+      const m = L.circleMarker([lat, lon], {
+        radius: radius, fillColor: markerColor(c.kind),
+        color: '#ffffff', weight: 1, fillOpacity: 0.8
+      }).addTo(map);
+      m.bindPopup(popupHtml(c));
+      markers[c.id] = m;
+    }
+  }
+  for (const id in markers) {
+    if (!seen.has(id)) { map.removeLayer(markers[id]); delete markers[id]; }
+  }
+}
+
+function updateMapStats(cams) {
+  const located = cams.filter(c => !(c.lat === 0 && c.lon === 0)).length;
+  const last = cams.reduce((m, c) => Math.min(m, c.last_seen_seconds), Infinity);
+  document.getElementById('map-stats').textContent = cams.length
+    ? `${cams.length} cameras (${located} located)  |  Last: ${ago(isFinite(last) ? last : 0)}`
+    : 'No cameras mapped yet.';
+}
+
+async function pollCameras() {
+  if (!map) return;
+  try {
+    const cams = await (await fetch('/api/cameras')).json();
+    updateMarkers(cams);
+    updateMapStats(cams);
+  } catch (e) {}
 }
 
 async function pollStatus() {
@@ -166,6 +401,17 @@ async function pollMesh() {
             ${p.detections_shared} shared</div>`;
         }).join('')
       : 'No peers heard.';
+
+    // Recenter the map on the first peer that reports a GPS fix.
+    if (map && !mapCentered) {
+      for (const p of peers) {
+        if (p.lat && p.lon) {
+          map.setView([p.lat / 1e6, p.lon / 1e6], 14);
+          mapCentered = true;
+          break;
+        }
+      }
+    }
   } catch (e) {}
 }
 
@@ -180,7 +426,8 @@ document.querySelectorAll('.tile[data-filter]').forEach(t => {
 setInterval(pollStatus, POLL_STATUS_MS);
 setInterval(pollFeed, POLL_FEED_MS);
 setInterval(pollMesh, POLL_MESH_MS);
-pollStatus(); pollFeed(); pollMesh();
+setInterval(pollCameras, POLL_CAMERAS_MS);
+pollStatus(); pollFeed(); pollMesh(); pollConfig();
 </script>
 </body>
 </html>

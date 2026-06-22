@@ -34,7 +34,10 @@ extern uint32_t zig_api_config(uint8_t *buf, uint32_t max);
 
 // Config persistence (main/config.c)
 extern int config_set_all(const char *name, const char *role,
-                          const char *ssid, const char *pass);
+                          const char *ssid, const char *pass,
+                          const char *lat, const char *lon);
+extern int config_set_location(const char *lat, const char *lon);
+extern int config_get(const char *key, char *out, int out_len);
 extern int config_is_configured(void);
 
 static httpd_handle_t server = NULL;
@@ -123,13 +126,16 @@ static esp_err_t h_setup_save(httpd_req_t *req) {
     }
 
     char name[33] = {0}, role[8] = {0}, ssid[33] = {0}, pass[65] = {0};
+    char lat[16] = {0}, lon[16] = {0};
     form_field(body, "name", name, sizeof(name));
     form_field(body, "role", role, sizeof(role));
     form_field(body, "ssid", ssid, sizeof(ssid));
     form_field(body, "pass", pass, sizeof(pass));
+    form_field(body, "lat", lat, sizeof(lat));
+    form_field(body, "lon", lon, sizeof(lon));
     if (role[0] == '\0') strcpy(role, "mobile");
 
-    config_set_all(name, role, ssid, pass);
+    config_set_all(name, role, ssid, pass, lat, lon);
 
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, "{\"ok\":true}");
@@ -160,12 +166,32 @@ static esp_err_t h_config_set(httpd_req_t *req) {
         return ESP_FAIL;
     }
     char name[33] = {0}, role[8] = {0}, ssid[33] = {0}, pass[65] = {0};
+    char lat[16] = {0}, lon[16] = {0};
     form_field(body, "name", name, sizeof(name));
     form_field(body, "role", role, sizeof(role));
     form_field(body, "ssid", ssid, sizeof(ssid));
     form_field(body, "pass", pass, sizeof(pass));
     if (role[0] == '\0') strcpy(role, "mobile");
-    config_set_all(name, role, ssid, pass);
+    // Preserve the stored map location unless the request overrides it.
+    if (form_field(body, "lat", lat, sizeof(lat)) < 0)
+        config_get("lat", lat, sizeof(lat));
+    if (form_field(body, "lon", lon, sizeof(lon)) < 0)
+        config_get("lon", lon, sizeof(lon));
+    config_set_all(name, role, ssid, pass, lat, lon);
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, "{\"ok\":true}");
+}
+
+static esp_err_t h_location_set(httpd_req_t *req) {
+    char body[128];
+    if (read_body(req, body, sizeof(body)) != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad body");
+        return ESP_FAIL;
+    }
+    char lat[16] = {0}, lon[16] = {0};
+    form_field(body, "lat", lat, sizeof(lat));
+    form_field(body, "lon", lon, sizeof(lon));
+    config_set_location(lat, lon);
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_sendstr(req, "{\"ok\":true}");
 }
@@ -222,6 +248,7 @@ int httpd_start_server(int setup_mode) {
         register_uri("/api/export/csv", HTTP_GET, h_export_csv);
         register_uri("/api/config", HTTP_GET, h_config_get);
         register_uri("/api/config", HTTP_POST, h_config_set);
+        register_uri("/api/location", HTTP_POST, h_location_set);
     }
     printf("Argus: httpd started (%s)\n", setup_mode ? "setup" : "dashboard");
     return 0;

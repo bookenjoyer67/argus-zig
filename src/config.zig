@@ -11,7 +11,7 @@ const std = @import("std");
 pub extern fn config_get(key: [*:0]const u8, out: [*]u8, out_len: i32) i32;
 pub extern fn config_is_configured() i32;
 pub extern fn config_role_is_base() i32;
-pub extern fn config_set_all(name: [*:0]const u8, role: [*:0]const u8, ssid: [*:0]const u8, pass: [*:0]const u8) i32;
+pub extern fn config_set_all(name: [*:0]const u8, role: [*:0]const u8, ssid: [*:0]const u8, pass: [*:0]const u8, lat: [*:0]const u8, lon: [*:0]const u8) i32;
 
 /// Read a config value into `buf`, returning the populated slice.
 /// Returns an empty slice if the key is absent.

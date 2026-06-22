@@ -239,6 +239,7 @@ const CAMERA_MAP_SIZE = 128;
 pub const CameraEntry = struct {
     oui: [3]u8 = .{ 0, 0, 0 },
     mac_hash: u32 = 0,
+    kind: display.TrackerType = .unknown,
     first_seen: u32 = 0,
     last_seen: u32 = 0,
     count: u32 = 0,
@@ -252,7 +253,7 @@ pub const CameraEntry = struct {
 pub var camera_map: [CAMERA_MAP_SIZE]CameraEntry = [_]CameraEntry{.{}} ** CAMERA_MAP_SIZE;
 pub var camera_map_count: usize = 0;
 
-fn updateCameraMap(mac: [6]u8, sender_id: u8, rssi: i8, lat: i32, lon: i32) void {
+fn updateCameraMap(mac: [6]u8, kind: display.TrackerType, sender_id: u8, rssi: i8, lat: i32, lon: i32) void {
     const hash = std.mem.readInt(u32, mac[0..4], .little);
     const now = main.tick_ms;
     // Reporter bitmask covers IDs 0..63; fold larger node IDs in.
@@ -263,6 +264,7 @@ fn updateCameraMap(mac: [6]u8, sender_id: u8, rssi: i8, lat: i32, lon: i32) void
         if (camera_map[i].mac_hash == hash) {
             camera_map[i].last_seen = now;
             camera_map[i].count += 1;
+            if (kind != .unknown) camera_map[i].kind = kind;
             if (rssi > camera_map[i].best_rssi) camera_map[i].best_rssi = rssi;
             if (camera_map[i].reporters[sid / 8] & bit == 0) {
                 camera_map[i].reporters[sid / 8] |= bit;
@@ -278,6 +280,7 @@ fn updateCameraMap(mac: [6]u8, sender_id: u8, rssi: i8, lat: i32, lon: i32) void
         var e = CameraEntry{
             .oui = mac[0..3].*,
             .mac_hash = hash,
+            .kind = kind,
             .first_seen = now,
             .last_seen = now,
             .count = 1,
@@ -369,5 +372,5 @@ fn recvDetection(pkt: []const u8, hop: u4) void {
         }
     }
 
-    updateCameraMap(mac, sender_id, rssi, lat, lon);
+    updateCameraMap(mac, kind, sender_id, rssi, lat, lon);
 }

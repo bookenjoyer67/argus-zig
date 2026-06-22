@@ -178,6 +178,8 @@ pub export fn zig_api_mesh(out: [*]u8, max: u32) callconv(.c) u32 {
         b.add("\"id\":\"UNIT-{d:0>2}\",", .{p.id});
         b.add("\"last_seen_seconds\":{d},", .{(main.tick_ms -% p.last_seen) / 1000});
         b.add("\"rssi\":{d},", .{p.rssi});
+        b.add("\"lat\":{d},", .{p.lat});
+        b.add("\"lon\":{d},", .{p.lon});
         b.add("\"detections_shared\":{d}", .{p.shared});
         b.add("}}", .{});
     }
@@ -197,6 +199,8 @@ pub export fn zig_api_cameras(out: [*]u8, max: u32) callconv(.c) u32 {
         if (emitted > 0) b.add(",", .{});
         b.add("{{", .{});
         b.add("\"oui\":\"{X:0>2}:{X:0>2}:{X:0>2}\",", .{ c.oui[0], c.oui[1], c.oui[2] });
+        b.add("\"id\":\"{X:0>8}\",", .{c.mac_hash});
+        b.add("\"kind\":\"{s}\",", .{kindName(c.kind)});
         b.add("\"count\":{d},", .{c.count});
         b.add("\"reporters\":{d},", .{c.reporter_count});
         b.add("\"best_rssi\":{d},", .{c.best_rssi});
@@ -218,6 +222,8 @@ pub export fn zig_api_config(out: [*]u8, max: u32) callconv(.c) u32 {
     var name_buf: [64]u8 = undefined;
     var role_buf: [16]u8 = undefined;
     var ssid_buf: [64]u8 = undefined;
+    var lat_buf: [16]u8 = undefined;
+    var lon_buf: [16]u8 = undefined;
 
     b.add("{{", .{});
     b.add("\"device_name\":", .{});
@@ -226,6 +232,10 @@ pub export fn zig_api_config(out: [*]u8, max: u32) callconv(.c) u32 {
     b.addStr(config.get("role", &role_buf));
     b.add(",\"wifi_ssid\":", .{});
     b.addStr(config.get("ssid", &ssid_buf));
+    b.add(",\"lat\":", .{});
+    b.addStr(config.get("lat", &lat_buf));
+    b.add(",\"lon\":", .{});
+    b.addStr(config.get("lon", &lon_buf));
     b.add(",\"configured\":{s}", .{boolStr(config.isConfigured())});
     b.add("}}", .{});
     return @intCast(b.len);
