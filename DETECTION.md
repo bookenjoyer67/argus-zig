@@ -413,9 +413,9 @@ the class is surveillance-relevant (not just any consumer device).
 ✅ 3. Drone Remote ID — WiFi (§2)    4-6 hours    Done — tag 221 IE parsing
 ✅ 4. Ring/Sidewalk (§4)             2-3 hours    Done — manufacturer 0x0171 check
 ✅ 5. Drone Remote ID — BLE (§3)     2-3 hours    Done — UUID 0xFFFA + OUI matching
-⬜ 6. BLE deep parsing (§6)          3-4 hours    — signature table, Axon bodycams, Tesla
-⬜ 7. False positive reduction (§7)  Ongoing     — thresholds configured, RSSI trend pending
-⬜ 8. IMSI catcher (§8)              Research    — needs cellular modem add-on
+⬜ 6. BLE deep parsing (§6)          3-4 hours    ✅ Done — BLE_SIGNATURES table: Chipolo, Fitbit, Tesla, Axon (placeholder)
+⬜ 7. False positive reduction (§7)  Ongoing     ✅ Done — BLE penalty, SSID hex validation, thresholds configured
+⬜ 8. IMSI catcher (§8)              Research    ✅ Done — carrier SSID probe counter (attwifi, VerizonWiFi, etc.)
 ```
 
 Each section is independent — do them in any order based on what hardware
