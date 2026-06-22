@@ -78,14 +78,16 @@ Last updated: June 22, 2026
 
 ### Display / UX
 - 7 OLED pages with 500ms live refresh on all pages
-- Summary: SURV + TRACK counters
-- Surveillance page: filtered to ALPR/drone/raven/camera only
+- Summary: SURV + TRACK counters (.wifi_device excluded from SURV)
+- Surveillance page: filtered to .flock_camera, .drone, .raven, .camera only
 - Proximity page: big RSSI, trend arrow, distance word, bar
 - History page: 5-bar chart, 12-min buckets, proper ordering
-- Trackers page: renamed from BLE trackers
-- LED threat-level patterns (sleep/scan/clear/watch/targeted/error)
+- Trackers page: AirTag/Tile/Samsung/FindMy list
+- LED threat-level patterns (sleep/scan/clear/aware/watched/targeted/error)
 - Battery voltage + percentage bar
 - GPS status display
+- Stealth mode: double-press toggle, OLED off, LED dark, scanning continues
+- Boot sequence: LED choreography → ARGUS logo → Scanning... → summary
 
 ### Persistence
 - SPIFFS CSV detection log (detections.csv)

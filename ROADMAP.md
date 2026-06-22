@@ -80,23 +80,24 @@ Message type parsing (Basic ID, Location, Self-ID).
 
 ### Short term
 
-- [ ] Drone model text display — Self-ID text captured but discarded
-- [ ] Real-world scoring weight tuning — field data needed
+- [x] Drone model text display — Self-ID text captured but discarded
+- [x] Real-world scoring weight tuning — OUI-only cap, field data ongoing
 - [ ] OUI database maintenance — add as new prefixes are discovered
-- [ ] Raven threshold tuning — single 0x180A too broad
+- [x] Raven threshold tuning — 2+ UUIDs = confirmed, 1 UUID = low confidence
+- [x] Stingray burst detector implementation (see STINGRAY.md)
+- [ ] WiFi channel coverage 1-13 with adaptive dwell
+- [x] Stealth mode (double-press toggle, OLED off, silent scanning)
+- [x] UX enhancements (threat-level LED patterns, boot sequence, LEDC PWM)
 
 ### Medium term
 
-- [x] Stingray burst detector implementation (see STINGRAY.md)
-- [ ] WiFi channel coverage 1-13 with adaptive dwell
-- [ ] Stealth mode (double-press toggle, OLED off, silent scanning)
-- [ ] UX enhancements (threat-level LED patterns, boot sequence, sleep/wake)
+- [~] Web dashboard + onboarding (see LAYERS_1_2.md) — httpd, config, api, HTML scaffold done
+- [ ] Captive portal DNS redirect
 - [ ] Geiger mode on proximity page (audio clicks proportional to RSSI)
+- [ ] MAC ignore list for persistent false positives
 
 ### Long term
 
-- [ ] Web dashboard (see LAYERS_1_2.md)
-- [ ] Onboarding / captive portal for first boot
 - [ ] OTA firmware updates via GitHub Releases
 - [ ] Community OUI database with PR-based contributions
 - [ ] Web flasher (esptool-js) for no-toolchain flashing

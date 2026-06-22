@@ -40,10 +40,18 @@ main/gps.c               ← NEO-6M UART driver
 main/main.c (oled/gpio)  ← I2C OLED driver + GPIO wrappers + battery ADC
 
 src/main.zig     590L    ← Entry point, main loop, extern fns, OUI db, tracker table
-src/scanner.zig  600L+   ← BLE/WiFi classifiers, scoring, NMEA parser, CSV logging,
-                           BLE_SIGNATURES table, carrier probe counter, Stingray burst detector
-src/display.zig  720L+   ← SSD1306 driver, 5x7 font, 7-page UI, LED alerts
+src/scanner.zig  767L    ← BLE/WiFi classifiers, scoring, NMEA parser, CSV logging,
+                           BLE_SIGNATURES table, Stingray burst detector, OUI-only cap
+src/display.zig  744L    ← SSD1306 driver, 5x7 font, 7-page UI, LED alerts, SURV/TRACK split
 src/mesh.zig      72L    ← LoRa mesh packet send/receive, CRC
+src/api.zig      205L    ← Dashboard API endpoints (/api/status, /api/detections, /api/mesh)
+src/config.zig    30L    ← Device config struct, SPIFFS load/save
+
+main/httpd.c     233L    ← ESP-IDF HTTP server, setup page handler, dashboard routes
+main/config.c     89L    ← SPIFFS JSON config read/write (C helpers)
+
+web/dashboard.html 186L  ← Dashboard HTML/CSS/JS (dark theme, vanilla JS polling)
+web/setup.html     80L   ← Onboarding setup page
 
 src/ouis.txt      96L    ← 73 MAC OUI prefixes (@embedFile + comptime parsed)
 ```
@@ -60,6 +68,11 @@ GNU ld can't resolve. ReleaseSafe is ~20KB larger but links correctly.
 
 **comptime OUI parsing** — @embedFile + comptime loop. No SPIFFS, no runtime parse.
 Edit ouis.txt, rebuild, done.
+
+**OUI-only WiFi cap** — An OUI match tells you the chip, not the device.
+Without SSID corroboration (Flock-XXXX, camera keywords, Remote ID), score
+is capped at 25. Tracked and logged, but never alerts or shows on surveillance
+page. SSID is the discriminator between a Liteon router and a Flock camera.
 
 **Fixed tracker table** — [MAX_TRACKERS] static array. No heap, no fragmentation.
 
