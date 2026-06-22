@@ -408,35 +408,26 @@ fn ageSec(last: u32) u32 {
 
 /// Page 0: Threat summary
 fn drawSummary() void {
-    var alpr_count: u32 = 0;
-    var ble_count: u32 = 0;
-    var drone_count: u32 = 0;
-    var raven_count: u32 = 0;
-    var cam_count: u32 = 0;
+    var surv_count: u32 = 0;  // surveillance: ALPR, drone, raven, camera, stingray
+    var track_count: u32 = 0; // consumer trackers: AirTag, Tile, Samsung, FindMy
     for (0..main.tracker_count) |i| {
         switch (main.trackers[i].kind) {
-            .flock_camera, .wifi_device => alpr_count += 1,
-            .drone => drone_count += 1,
-            .raven => raven_count += 1,
-            .camera => cam_count += 1,
-            else => ble_count += 1,
+            .flock_camera, .wifi_device, .drone, .raven, .camera => surv_count += 1,
+            else => track_count += 1,
         }
     }
+    if (scanner.stingray_alert_active) surv_count += 1;
 
     oledClear();
     drawPageNum(0);
     oledDrawStr(0, 0, "ARGUS");
-    oledDrawStr(0, 18, "ALPR:");
-    oledDrawInt(48, 18, @intCast(alpr_count));
-    oledDrawStr(78, 18, "DRN:");
-    oledDrawInt(108, 18, @intCast(drone_count));
-    oledDrawStr(0, 28, "BLE:");
-    oledDrawInt(48, 28, @intCast(ble_count));
-    oledDrawStr(78, 28, "RAV:");
-    oledDrawInt(108, 28, @intCast(raven_count));
-    oledDrawStr(0, 36, "CAM:");
-    oledDrawInt(48, 36, @intCast(cam_count));
-    oledDrawInt(78, 36, @intCast(main.KNOWN_OUIS_COUNT));
+    if (scanner.stingray_alert_active) oledDrawStr(0, 8, "!! STINGRAY ?");
+    oledDrawStr(0, 18, "SURV:");
+    oledDrawInt(48, 18, @intCast(surv_count));
+    oledDrawStr(78, 18, "TRACK:");
+    oledDrawInt(118, 18, @intCast(track_count));
+    oledDrawStr(0, 28, "OUI:");
+    oledDrawInt(48, 28, @intCast(main.KNOWN_OUIS_COUNT));
     drawBatteryBar(0, 44, 40, 8);
     // GPS status
     var gps_buf: [24]u8 = undefined;
@@ -451,16 +442,21 @@ fn drawSummary() void {
     oledUpdate();
 }
 
-/// Page 1: Active threats list (all trackers, sorted by last_seen desc)
+/// Page 1: Surveillance — ALPR, drone, raven, camera only (not consumer trackers)
 fn drawThreats() void {
     oledClear();
     drawPageNum(1);
-    oledDrawStr(0, 0, "THREATS");
+    oledDrawStr(0, 0, "SURVEILLANCE");
 
     var row: u8 = 0;
     const start = if (main.tracker_count > 6) main.tracker_count - 6 else 0;
     for (start..main.tracker_count) |i| {
         if (row >= 6) break;
+        // Filter to surveillance types only — skip consumer trackers
+        switch (main.trackers[i].kind) {
+            .flock_camera, .wifi_device, .drone, .raven, .camera => {},
+            else => continue,
+        }
         const y: u8 = 10 + row * 8;
         var buf: [32]u8 = undefined;
         const ks = kindStr(main.trackers[i].kind);
@@ -473,6 +469,11 @@ fn drawThreats() void {
             ks, fw, model, main.trackers[i].rssi, s,
         }) catch continue;
         oledDrawStr(0, y, &buf);
+        row += 1;
+    }
+    // Stingray alert — indirect detection, show as special row
+    if (scanner.stingray_alert_active and row < 6) {
+        oledDrawStr(0, 10 + row * 8, "!! STINGRAY DETECT ?");
         row += 1;
     }
     oledDrawStr(0, 56, "PRG:next page");
@@ -609,7 +610,7 @@ fn drawHistory() void {
 fn drawBleList() void {
     oledClear();
     drawPageNum(4);
-    oledDrawStr(0, 0, "BLE TRACKERS");
+    oledDrawStr(0, 0, "TRACKERS");
 
     var row: u8 = 0;
     var rendered: u8 = 0;

@@ -49,6 +49,34 @@ pub const METHOD_RAVEN_LOW: u16   = 1 << 15; // Raven 1 UUID — possible, lower
 pub var carrier_probes: u32 = 0;
 
 // ================================================================
+// STINGRAY / IMSI-CATCHER DETECTION (carrier-probe burst analysis)
+// ================================================================
+//
+// Indirect detection: a Stingray forces phones off cellular, so they
+// probe for carrier WiFi all at once. We bucket carrier-probe counts in
+// 5s windows and flag a bucket exceeding 3x the rolling 60s average.
+// Two flagged buckets within 30s raises a STINGRAY alert. See STINGRAY.md.
+
+const BURST_BUCKET_MS: u32 = 5000;          // 5-second time buckets
+const BURST_WINDOW_BUCKETS: usize = 12;     // 60s rolling window (12 × 5s)
+const BURST_THRESHOLD_MULTIPLIER: u32 = 3;  // 3x average = spike
+const BURST_CONFIRM_BUCKETS: u32 = 6;       // two spikes within 30s (6 × 5s)
+const STINGRAY_CLEAR_MS: u32 = 300000;      // auto-clear after 5 min
+
+/// True while a probable Stingray event is active. Read by display + LED.
+pub var stingray_alert_active: bool = false;
+/// Probe count of the spike that triggered the active alert.
+pub var stingray_probe_count: u32 = 0;
+
+var burst_buckets: [BURST_WINDOW_BUCKETS]u32 = [_]u32{0} ** BURST_WINDOW_BUCKETS;
+var burst_bucket_idx: usize = 0;
+var burst_bucket_start_ms: u32 = 0;
+var burst_recent_count: u32 = 0;            // probes in the currently-filling bucket
+var burst_last_spike_at: u32 = 0;           // tick_ms of the last flagged bucket
+var stingray_alert_ms: u32 = 0;             // tick_ms the alert went active
+var stingray_last_location: ?[2]i32 = null; // GPS at last suspected event
+
+// ================================================================
 // OUI MATCHING
 // ================================================================
 
@@ -278,6 +306,7 @@ pub fn classifyWiFi(mac: [6]u8, ssid: []const u8) ClassResult {
             }
             if (match) {
                 carrier_probes += 1;
+                burst_recent_count += 1;
                 break;
             }
         }
@@ -311,6 +340,83 @@ pub fn classifyWiFi(mac: [6]u8, ssid: []const u8) ClassResult {
     }
 
     return .{ .kind = kind, .methods = methods };
+}
+
+// ================================================================
+// STINGRAY BURST DETECTOR — bucket rotation + spike analysis
+// ================================================================
+
+/// Append a Stingray event to the CSV log. Uses the same 8-column schema
+/// as logCsv() (time,kind,mac,rssi,score,lat,lon,methods) so the log stays
+/// uniformly parseable; the probe count rides in the score column.
+fn logStingray() void {
+    const loc = stingray_last_location orelse [2]i32{ 0, 0 };
+    var line: [80]u8 = undefined;
+    const s = std.fmt.bufPrint(&line, "{d},STINGRAY,000000000000,0,{d},{d},{d},0000\n", .{
+        main.tick_ms, stingray_probe_count, loc[0], loc[1],
+    }) catch return;
+    line[s.len] = 0; // null-terminate for the C spiffs_append_line()
+    _ = main.spiffs_append_line("detections.csv", line[0..s.len :0].ptr);
+}
+
+/// Spike analysis on the just-closed bucket. Called after each rotation.
+fn detectBurst() void {
+    // Rolling average over every bucket EXCEPT the just-closed one at
+    // burst_bucket_idx, so a spike never inflates its own baseline.
+    var sum: u32 = 0;
+    var active: u32 = 0;
+    for (0..BURST_WINDOW_BUCKETS) |i| {
+        if (i == burst_bucket_idx) continue;
+        if (burst_buckets[i] > 0) {
+            sum += burst_buckets[i];
+            active += 1;
+        }
+    }
+    if (active < 3) return; // need at least 3 buckets for a baseline
+    const avg: u32 = sum / active;
+    if (avg == 0) return;
+
+    const recent = burst_buckets[burst_bucket_idx]; // the bucket we just closed
+    if (recent < 4 or recent < avg * BURST_THRESHOLD_MULTIPLIER) return;
+
+    const now = main.tick_ms;
+    // Confirm: a prior spike within the confirm window → raise the alert.
+    if (burst_last_spike_at != 0 and
+        (now -% burst_last_spike_at) < BURST_CONFIRM_BUCKETS * BURST_BUCKET_MS)
+    {
+        if (!stingray_alert_active) { // rising edge — log exactly once
+            stingray_alert_active = true;
+            stingray_alert_ms = now;
+            stingray_probe_count = recent;
+            if (gps_fix) stingray_last_location = .{ gps_lat, gps_lon };
+            logStingray();
+        }
+    }
+    burst_last_spike_at = now;
+}
+
+/// Rotate the bucket window forward once BURST_BUCKET_MS has elapsed.
+/// Call once per main-loop iteration from zig_main().
+pub fn burstTick(now_ms: u32) void {
+    if (burst_bucket_start_ms == 0) {
+        burst_bucket_start_ms = now_ms;
+        return;
+    }
+    if ((now_ms -% burst_bucket_start_ms) < BURST_BUCKET_MS) return;
+
+    burst_bucket_idx = (burst_bucket_idx + 1) % BURST_WINDOW_BUCKETS;
+    burst_buckets[burst_bucket_idx] = burst_recent_count;
+    burst_recent_count = 0;
+    burst_bucket_start_ms = now_ms;
+
+    detectBurst();
+}
+
+/// Auto-clear an active alert after STINGRAY_CLEAR_MS with no new spike.
+pub fn burstClearCheck(now_ms: u32) void {
+    if (stingray_alert_active and (now_ms -% stingray_alert_ms) > STINGRAY_CLEAR_MS) {
+        stingray_alert_active = false;
+    }
 }
 
 // ================================================================

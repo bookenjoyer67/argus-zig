@@ -380,6 +380,13 @@ pub fn updateLed() void {
         return;
     }
 
+    if (scanner.stingray_alert_active) {
+        // Stingray: 5 Hz strobe. Priority below Error/Stealth, above trackers.
+        const p = tick_ms % 200;
+        led_pwm_set(if (p < 100) 255 else 0);
+        return;
+    }
+
     const level = currentThreatLevel();
     if (level >= scanner.SCORE_CERT) {
         const p = tick_ms % 200;
@@ -678,6 +685,11 @@ export fn zig_main() callconv(.c) void {
         // Non-blocking PWM pattern reflecting the highest recent threat score,
         // or the stealth / error state. Replaces the old heartbeat blink.
         updateLed();
+
+        // --- Stingray burst detector ---
+        // Roll the carrier-probe bucket window and check for / clear alerts.
+        scanner.burstTick(tick_ms);
+        scanner.burstClearCheck(tick_ms);
 
         // --- LoRa mesh polling ---
         // Check for received mesh packets, process into tracker table.
