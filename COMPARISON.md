@@ -103,11 +103,11 @@ Flock-Detector writes GPS-tagged CSV to microSD. Argus writes to SPIFFS
 and requires a long-press to dump over serial. For a walking/driving
 device, seamless GPS logging that you retrieve later is expected.
 
-### 4. Pre-built binaries / web flasher
-Meshtastic's web flasher (flasher.meshtastic.org) is the gold standard —
-plug in USB, open a website, click Flash, done. GhostESP has similar.
-Nobody needs to install PlatformIO or ESP-IDF. Argus requires both Zig
-and ESP-IDF toolchains.
+### 4. Pre-built binaries / web flasher — DONE
+Shipped: `web/flash.html` (esp-web-tools) on GitHub Pages flashes a prebuilt
+merged image over Web Serial — plug in USB, open the page, click Install, no
+Zig/ESP-IDF/PlatformIO. The v1.0.0 release binary is served same-origin from
+Pages. Matches Meshtastic's gold-standard flow (desktop Chrome/Edge only).
 
 ### 5. Native mobile app + push
 Meshtastic has iOS and Android apps. GhostESP has one. Argus now has a
@@ -151,15 +151,15 @@ would make it feel like a product.
 | BLE scanning | BLE address type analysis for scoring | Flock-Detector 3.0 |
 | GPS logging | Auto-named CSV files on microSD | Flock-Detector 3.0 |
 | Mesh UI | Phone app with map, message history | Meshtastic |
-| Setup | One-click web flasher, no toolchain | Meshtastic, GhostESP |
 | Power | Deep sleep, duty-cycled scanning | Meshtastic |
 
 ---
 
 ## What to build next (priority ranked by competitive gap)
 
-1. **Pre-built binaries + web flasher** — biggest adoption blocker. Without
-   this, Argus stays a personal project. esptool-js + GitHub Pages = ~4 hours.
+1. **Pre-built binaries + web flasher** — DONE. `web/flash.html` (esp-web-tools)
+   on GitHub Pages flashes the prebuilt v1.0.0 merged image over Web Serial;
+   `tools/release.sh` + the Pages workflow cut and host new builds.
 
 2. **OTA firmware updates** — second biggest blocker. Nobody reflashes over
    USB-C after the first time if they don't have to. ESP-IDF OTA + GitHub

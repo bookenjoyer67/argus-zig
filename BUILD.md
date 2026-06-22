@@ -1,5 +1,10 @@
 # Build Guide — Argus on Heltec V3
 
+> **Just want to flash a device?** You don't need any of this. Open the
+> **[web flasher](https://bookenjoyer67.github.io/argus-zig/web/flash.html)**
+> in desktop Chrome/Edge, plug in over USB-C, click Install. The guide below
+> is for building from source.
+
 ## Prerequisites
 
 - x86_64 Linux (tested on CachyOS/Arch)
@@ -191,3 +196,19 @@ LED still provides visual alerts.
 ```
 
 Full cycle: ~15 seconds. Most of that is flashing and bootloader handshake.
+
+## Cutting a release (prebuilt firmware + web flasher)
+
+End users flash from a browser, so each release ships a single merged image.
+
+```bash
+tools/release.sh v1.0.0        # build + idf.py merge-bin + gh release create
+```
+
+This runs `./build-zig.sh`, `idf.py build`, `idf.py merge-bin -o argus-merged.bin`,
+and `gh release create <tag> argus-merged.bin`. Publishing the release triggers
+the GitHub Pages workflow (`.github/workflows/pages.yml`), which downloads
+`argus-merged.bin` into `web/firmware/` and redeploys, so
+`web/flash.html` (esp-web-tools) serves the binary same-origin. The manifest
+(`web/firmware/manifest.json`) points at the merged image at offset 0 for
+ESP32-S3.

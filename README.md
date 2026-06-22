@@ -15,6 +15,17 @@ Written in Zig + ESP-IDF. Pocket-sized. Zero external parts needed.
 
 ![](assets/divider.svg)
 
+## ✦ Flash it (no toolchain)
+
+Open **[the web flasher](https://bookenjoyer67.github.io/argus-zig/web/flash.html)**
+in desktop Chrome or Edge, plug the Heltec V3 in over USB-C, and click **Install**.
+Accept the erase prompt on a fresh board — it boots into the "Argus Setup"
+onboarding AP. No Zig, no ESP-IDF, no PlatformIO.
+
+(Builders: see BUILD.md for the from-source toolchain.)
+
+![](assets/divider.svg)
+
 ## ✦ What it detects
 
 - **Flock Safety ALPR cameras** — 33 MAC OUI prefixes, SSID format validation

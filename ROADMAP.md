@@ -107,5 +107,6 @@ Message type parsing (Basic ID, Location, Self-ID).
 
 - [ ] OTA firmware updates via GitHub Releases
 - [ ] Community OUI database with PR-based contributions
-- [ ] Web flasher (esptool-js) for no-toolchain flashing
+- [x] Web flasher (esp-web-tools) for no-toolchain flashing — web/flash.html on
+      GitHub Pages, prebuilt v1.0.0 merged image served from the release
 - [ ] 3D-printable enclosure
