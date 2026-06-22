@@ -18,7 +18,7 @@
 # project level in CMakeLists.txt, not here.
 
 idf_component_register(
-    SRCS "main.c" "ble.c"
+    SRCS "main.c" "ble.c" "wifi.c"
     INCLUDE_DIRS "."
         "${IDF_PATH}/components/bt/host/nimble/nimble/porting/nimble/include"
         "${IDF_PATH}/components/bt/host/nimble/nimble/nimble/include"
@@ -29,5 +29,9 @@ idf_component_register(
         "${IDF_PATH}/components/bt/host/nimble/port/include"
         "${IDF_PATH}/components/bt/host/nimble/nimble/porting/npl/freertos/include"
         "${IDF_PATH}/components/bt/host/nimble/nimble/nimble/transport/include"
+        "${IDF_PATH}/components/esp_wifi/include"
+        "${IDF_PATH}/components/esp_wifi/include/local"
+        "${IDF_PATH}/components/esp_netif/include"
+        "${IDF_PATH}/components/esp_event/include"
     REQUIRES nvs_flash bt freertos esp_wifi driver
 )

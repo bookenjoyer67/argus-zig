@@ -96,6 +96,14 @@ extern fn oled_i2c_write(control_byte: u8, data: [*]const u8, len: u32) i32;
 // Returns 1 if data available, 0 if buffer empty.
 extern fn ble_scan_poll(addr_out: [*]u8, rssi_out: *i8, adv_type_out: *u8, data_out: [*]u8, data_len_out: *u8) i32;
 
+// WiFi promiscuous sniffer — callback pushes simplified 802.11 frames
+// to a ring buffer. wifi_scan_poll drains one result.
+// Returns 1 if data available, 0 if buffer empty.
+extern fn wifi_scan_poll(addr_out: [*]u8, receiver_out: [*]u8, rssi_out: *i8, channel_out: *u8, frame_type_out: *u8, ssid_out: [*]u8, ssid_len_out: *u8) i32;
+
+// Diagnostic: total WiFi frames captured (to verify sniffer is running)
+extern fn wifi_get_frame_count() u32;
+
 // ================================================================
 // HELTEC V3 PIN DEFINITIONS
 // ================================================================
@@ -219,13 +227,16 @@ fn matchOui(mac: [6]u8) bool {
 
 const MAX_TRACKERS = 64;
 
-/// Known BLE tracker types. Stored as u8 in the table.
+/// Known tracker types. Stored as u8 in the table.
 const TrackerType = enum(u8) {
-    airtag,   // Apple AirTag (Find My protocol, 0x4C00 type 0x12)
-    tile,     // Tile (service UUID 0xFEED)
-    samsung,  // Samsung SmartTag (manufacturer ID 0x0075)
-    findmy,   // Generic Apple Find My device (couldn't narrow)
-    unknown,  // Detected but unclassified
+    airtag,        // Apple AirTag (Find My protocol, 0x4C00 type 0x12)
+    tile,          // Tile (service UUID 0xFEED)
+    samsung,       // Samsung SmartTag (manufacturer ID 0x0075)
+    findmy,        // Generic Apple Find My device (couldn't narrow)
+    flock_camera,  // Flock Safety ALPR camera (OUI match + SSID pattern)
+    wifi_device,   // WiFi device with known surveillance OUI
+    unknown,       // Detected but unclassified
+    _,
 };
 
 const TrackerEntry = struct {
@@ -288,6 +299,23 @@ fn classifyBle(adv_data: []const u8) TrackerType {
 
         pos += 1 + len;
     }
+    return .unknown;
+}
+
+/// Classify a WiFi detection based on OUI match and SSID pattern.
+/// Flock Safety cameras probe for networks named "Flock-XXXX" and
+/// have MAC OUIs matching the known surveillance database.
+fn classifyWiFi(mac: [6]u8, ssid: []const u8) TrackerType {
+    const oui_match = matchOui(mac);
+
+    const ssid_flock = blk: {
+        if (ssid.len < 5) break :blk false;
+        const prefix = [5]u8{ 'F', 'L', 'O', 'C', 'K' };
+        break :blk std.mem.eql(u8, ssid[0..5], &prefix);
+    };
+
+    if (oui_match and ssid_flock) return .flock_camera;
+    if (oui_match) return .wifi_device;
     return .unknown;
 }
 
@@ -659,14 +687,25 @@ var current_page: u8 = 0;
 /// Shows tracker count, OUI database size, and build info.
 /// Future: per-category breakdown (AirTag, Tile, etc.)
 fn drawSummary() void {
+    // Count ALPR and BLE trackers
+    var alpr_count: u32 = 0;
+    var ble_count: u32 = 0;
+    for (0..tracker_count) |i| {
+        switch (trackers[i].kind) {
+            .flock_camera, .wifi_device => alpr_count += 1,
+            else => ble_count += 1,
+        }
+    }
+
     oledClear();
     oledDrawStr(0, 0, "ARGUS TRACKER");
-    oledDrawStr(0, 10, "Trackers:");
-    oledDrawInt(60, 10, @intCast(tracker_count));
-    oledDrawStr(0, 25, "BTN: page  LED: alert");
-    oledDrawStr(0, 40, "OUI db:");
-    oledDrawInt(60, 40, @intCast(KNOWN_OUIS_COUNT));
-    oledDrawStr(0, 55, "zig + ESP-IDF");
+    oledDrawStr(0, 10, "ALPR:");
+    oledDrawInt(48, 10, @intCast(alpr_count));
+    oledDrawStr(0, 20, "BLE:");
+    oledDrawInt(48, 20, @intCast(ble_count));
+    oledDrawStr(0, 35, "BTN: page  LED: alert");
+    oledDrawStr(0, 50, "OUI:");
+    oledDrawInt(48, 50, @intCast(KNOWN_OUIS_COUNT));
     oledUpdate();
 }
 
@@ -784,14 +823,13 @@ export fn zig_main() callconv(.c) void {
     // MAIN LOOP
     // ================================================================
     //
-    // Single-threaded cooperative loop. NimBLE runs in its own task
-    // and pushes scan results into a ring buffer. This loop:
+    // Single-threaded cooperative loop. NimBLE and WiFi sniffing run
+    // in their own tasks and push results into ring buffers. This loop:
     //   1. Drains the BLE ring buffer, classifies devices, updates table
-    //   2. Checks button (with debounce)
-    //   3. Heartbeat LED every 3 seconds
-    //   4. Sleeps 10ms
-    //
-    // WiFi promiscuous mode (Phase 2) will add a second ring buffer here.
+    //   2. Drains the WiFi ring buffer, OUI/SSID match, updates table
+    //   3. Checks button (with debounce)
+    //   4. Heartbeat LED every 3 seconds
+    //   5. Sleeps 10ms
 
     var had_new: bool = false; // true if a new tracker was detected this iteration
 
@@ -829,6 +867,58 @@ export fn zig_main() callconv(.c) void {
 
             // Yield every 8 events to avoid watchdog timeout
             if (poll_count % 8 == 0) {
+                delayMs(5);
+            }
+        }
+
+        if (had_new) {
+            alertNew();
+            drawPage();
+        }
+
+        // --- WiFi scan polling ---
+        // Drain all available results from the WiFi promiscuous ring buffer.
+        // Match transmitter MAC against known Flock Safety OUIs and check
+        // probe request SSIDs for "Flock" pattern.
+
+        var wifi_addr: [6]u8 = undefined;
+        var wifi_receiver: [6]u8 = undefined;
+        var wifi_rssi: i8 = undefined;
+        var wifi_channel: u8 = undefined;
+        var wifi_frame_type: u8 = undefined;
+        var wifi_ssid: [32]u8 = undefined;
+        var wifi_ssid_len: u8 = undefined;
+
+        poll_count = 0;
+        while (wifi_scan_poll(&wifi_addr, &wifi_receiver, &wifi_rssi, &wifi_channel, &wifi_frame_type, &wifi_ssid, &wifi_ssid_len) != 0) {
+            poll_count += 1;
+
+            // Skip unknown MACs — only track OUI matches or "Flock" SSIDs.
+            // This avoids flooding the tracker table with every passing phone.
+            const kind = classifyWiFi(wifi_addr, wifi_ssid[0..wifi_ssid_len]);
+            if (kind == .unknown) {
+                // Yield periodically even when skipping
+                if (poll_count % 16 == 0) {
+                    delayMs(5);
+                }
+                continue;
+            }
+
+            const is_new = blk: {
+                for (0..tracker_count) |i| {
+                    if (std.mem.eql(u8, &trackers[i].mac, &wifi_addr)) break :blk false;
+                }
+                break :blk true;
+            };
+
+            trackBle(wifi_addr, kind, wifi_rssi);
+
+            if (is_new) {
+                had_new = true;
+            }
+
+            // Yield every 4 events to avoid watchdog timeout
+            if (poll_count % 4 == 0) {
                 delayMs(5);
             }
         }

@@ -32,6 +32,9 @@ extern void zig_main(void);
 // Defined in ble.c
 extern int ble_scan_init(void);
 
+// Defined in wifi.c
+extern int wifi_scan_init(void);
+
 // ================================================================
 // OLED I2C helpers — called from Zig via extern fn
 // ================================================================
@@ -201,10 +204,11 @@ void app_main(void) {
 
     printf("Argus Zig — booting\n");
 
-    // --- Start BLE scanning ---
-    // NimBLE initializes and begins passive scanning in its own task.
-    // Results are pushed to a ring buffer, polled from zig_main().
+    // --- Start BLE and WiFi scanning ---
+    // NimBLE and WiFi promiscuous mode start in their own tasks.
+    // Results are pushed to ring buffers, polled from zig_main().
     ble_scan_init();
+    wifi_scan_init();
 
     // --- Hand off to Zig ---
     //
