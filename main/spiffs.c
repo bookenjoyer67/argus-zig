@@ -129,3 +129,18 @@ void spiffs_csv_export(void) {
 
     printf("--- END ---\n");
 }
+
+// Delete the CSV file to start fresh. Returns 0 on success.
+int spiffs_clear_csv(void) {
+    if (!spiffs_ready) return -1;
+
+    char full[64];
+    snprintf(full, sizeof(full), "/spiffs/detections.csv");
+
+    if (remove(full) == 0) {
+        printf("Argus: CSV cleared\n");
+        return 0;
+    }
+    printf("Argus: CSV clear failed (no file?)\n");
+    return -1;
+}

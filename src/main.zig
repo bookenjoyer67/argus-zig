@@ -125,6 +125,9 @@ pub extern fn spiffs_write_file(path: [*:0]const u8, data: [*]const u8, len: u32
 // Dump CSV log to serial (called on long press). Entirely in C — see spiffs.c.
 pub extern fn spiffs_csv_export() void;
 
+// Delete detections.csv to start fresh.
+pub extern fn spiffs_clear_csv() i32;
+
 // LoRa SX1262 — mesh networking on 915 MHz
 // lora_send: TX a packet (max 255 bytes), blocks until done.
 // lora_poll_receive: check for received packet, returns length (0 if none).
@@ -522,15 +525,20 @@ export fn zig_main() callconv(.c) void {
             if (buttonPressed()) {
                 // Check for long press (>1 second hold)
                 var hold_ms: u32 = 50;
-                while (buttonPressed() and hold_ms < 1200) {
+                while (buttonPressed() and hold_ms < 3200) {
                     delayMs(50);
                     hold_ms += 50;
                 }
 
                 if (hold_ms >= 1200) {
-                    // Long press — LED blinks, then CSV dump over serial
+                    // Long press — LED blink, then CSV dump over serial
                     ledOn();  delayMs(50); ledOff();
                     spiffs_csv_export();
+                    // Very long press (>3s) — also clear CSV after dump
+                    if (hold_ms >= 3000) {
+                        delayMs(200);
+                        _ = spiffs_clear_csv();
+                    }
                     // Wait for release
                     while (buttonPressed()) {
                         delayMs(10);

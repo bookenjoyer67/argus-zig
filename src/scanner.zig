@@ -347,6 +347,9 @@ fn detectRssiTrend(history: [5]i8) bool {
 /// observations, keeps the best RSSI, and recomputes confidence score.
 /// Returns true if this is a new tracker (for alert triggering).
 pub fn trackDevice(mac: [6]u8, result: ClassResult, rssi: i8) bool {
+    // Reject unclassified devices — don't waste tracker slots on noise
+    if (result.methods == 0) return false;
+
     // Pre-compute score for filter check
     const score = computeScore(result.methods, rssi, mac);
 
@@ -551,6 +554,9 @@ pub fn logCsv(mac: [6]u8, rssi: i8) void {
             const ks = display.kindStr(main.trackers[i].kind);
             const methods = main.trackers[i].methods;
             const score = main.trackers[i].score;
+
+            // Skip unclassified noise — don't waste SPIFFS space
+            if (methods == 0) return;
 
             var line: [110]u8 = undefined;
             const s = std.fmt.bufPrint(&line, "{d},{s},{X:0>2}{X:0>2}{X:0>2}{X:0>2}{X:0>2}{X:0>2},{d},{d},{d},{d},{X:0>2}\n", .{
