@@ -1,182 +1,334 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Argus — BLE</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <style>
-  :root{
-    --bg:#04060d; --panel:#0a0f1a; --line:#1b2535; --txt:#dfeaf2;
-    --accent:#1eff9d; --gold:#e8c24a; --corrupt:#ff2e2e; --tracker:#9d5cff;
-    --stingray:#ff2e2e; --muted:#8fa3ad;
+  /* === Argus, the Emerald Star — fallen-titan theme (BLE client) === */
+  :root {
+    --bg:#04060d; --surface:rgba(12,19,32,.82); --text:#dfeae4;
+    --accent:#1eff9d; --gold:#e8c24a; --soul:#3a7bff; --void:#9d5cff;
+    --corrupt:#ff2e2e;
+    --flock:var(--corrupt); --drone:var(--soul); --raven:var(--void);
+    --camera:var(--gold); --tracker:#37e0c0; --stingray:var(--corrupt);
+    --green:var(--accent); --yellow:var(--gold); --orange:#ff9a3c; --red:var(--corrupt);
   }
-  *{box-sizing:border-box}
-  body{margin:0;background:var(--bg);color:var(--txt);
-    font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;padding:14px;}
-  h1{font-size:18px;letter-spacing:2px;margin:0 0 4px;color:#eafff5}
-  .sub{font-size:11px;color:var(--muted);margin-bottom:12px}
-  button{background:var(--panel);color:var(--txt);border:1px solid var(--line);
-    border-radius:8px;padding:9px 14px;font:inherit;cursor:pointer}
-  button:hover{border-color:var(--accent)}
-  button.primary{border-color:var(--accent);color:var(--accent)}
-  .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px}
-  #status{font-size:12px;color:var(--muted)}
-  .banner{border-radius:10px;padding:12px;text-align:center;font-size:15px;
-    letter-spacing:2px;margin-bottom:12px;border:1px solid var(--line)}
-  .b-clear{border-color:var(--accent);color:var(--accent)}
-  .b-aware{border-color:var(--gold);color:var(--gold)}
-  .b-watched,.b-targeted{border-color:var(--corrupt);color:var(--corrupt);
-    animation:pulse 1s infinite}
-  @keyframes pulse{50%{opacity:.5}}
-  .tiles{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:12px}
-  .tile{background:var(--panel);border:1px solid var(--line);border-radius:10px;
-    padding:12px 6px;text-align:center}
-  .tile .n{font-size:24px;font-weight:700;color:#eafff5}
-  .tile .l{font-size:10px;color:var(--muted);margin-top:4px;letter-spacing:1px}
-  .tile.on{border-color:var(--stingray);color:var(--stingray);animation:pulse 1s infinite}
-  .meta{display:flex;justify-content:space-between;font-size:11px;color:var(--muted);
-    margin-bottom:12px}
-  .feed{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:8px}
-  .det{display:flex;justify-content:space-between;gap:8px;padding:6px 4px;
-    border-bottom:1px solid var(--line);font-size:12px}
-  .det:last-child{border-bottom:none}
-  .det .k{font-weight:700}
-  .k-flock_camera,.k-camera{color:var(--gold)}
-  .k-drone{color:#3a7bff}.k-raven{color:var(--corrupt)}
-  .k-airtag,.k-tile,.k-samsung,.k-findmy{color:var(--tracker)}
-  .det .r{color:var(--muted)}
-  .lvl-HIGH,.lvl-CERT{color:var(--corrupt)}.lvl-MED{color:var(--gold)}
+  * { box-sizing:border-box; }
+  body { margin:0; color:var(--text); font-family:system-ui,sans-serif;
+         padding:16px 16px 64px;
+         background:
+           radial-gradient(1px 1px at 18% 28%, rgba(255,255,255,.55), transparent),
+           radial-gradient(1px 1px at 72% 62%, rgba(255,255,255,.4), transparent),
+           radial-gradient(1px 1px at 42% 82%, rgba(120,255,200,.45), transparent),
+           radial-gradient(1px 1px at 86% 18%, rgba(255,255,255,.35), transparent),
+           radial-gradient(1000px 620px at 50% -12%, rgba(30,255,157,.12), transparent 70%),
+           var(--bg);
+         background-attachment:fixed; }
+  mono, .mono { font-family:ui-monospace,Menlo,Consolas,monospace; }
+  h1 { letter-spacing:6px; margin:0; font-size:24px; color:#eafff5; font-weight:700;
+       text-shadow:0 0 8px rgba(30,255,157,.7), 0 0 22px rgba(30,255,157,.35);
+       animation:starpulse 4s ease-in-out infinite; }
+  @keyframes starpulse { 50% { text-shadow:0 0 12px rgba(30,255,157,.95), 0 0 30px rgba(30,255,157,.5); } }
+  .dev { font-size:12px; letter-spacing:2px; color:rgba(30,255,157,.7); margin:2px 0 14px; }
+  h2 { font-size:13px; text-transform:uppercase; letter-spacing:2px;
+       color:rgba(30,255,157,.7); margin:0 0 10px; }
+  .panel { background:var(--surface); border-radius:12px; padding:16px; margin-bottom:16px;
+           border:1px solid rgba(232,194,74,.25);
+           box-shadow:inset 0 0 0 1px rgba(30,255,157,.06), 0 4px 24px rgba(0,0,0,.55); }
+  .grid { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; }
+  @media(min-width:560px){ .grid { grid-template-columns:repeat(6,1fr); } }
+  .tile { border-radius:10px; padding:14px 6px; text-align:center;
+          background:rgba(8,14,24,.7); border:1px solid #1d2a3a; cursor:pointer;
+          transition:transform .12s, box-shadow .12s, border-color .12s; }
+  .tile:hover { transform:translateY(-2px); border-color:var(--gold); }
+  .tile .n { font-size:26px; font-weight:700; color:#eafff5; }
+  .tile .l { font-size:11px; opacity:.7; margin-top:4px; letter-spacing:1px; }
+  .tile.green { border-color:var(--accent); box-shadow:0 0 12px rgba(30,255,157,.25); }
+  .tile.yellow { border-color:var(--gold); box-shadow:0 0 12px rgba(232,194,74,.25); }
+  .tile.red { border-color:var(--corrupt); box-shadow:0 0 12px rgba(255,46,46,.3); }
+  .tile.active { outline:2px solid var(--accent); }
+  .tile.sr-off { border-color:#2a3340; opacity:.5; }
+  .tile.sr-on { border-color:var(--stingray); animation:corruptpulse 1s infinite; }
+  @keyframes corruptpulse { 0%,100%{box-shadow:0 0 6px rgba(255,46,46,.4);} 50%{box-shadow:0 0 20px rgba(255,46,46,.9);} }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  td { padding:5px 6px; border-bottom:1px solid rgba(255,255,255,.06); }
+  .k-flock,.k-flock_camera,.k-wifi_device { color:var(--flock); }
+  .k-drone { color:var(--drone); } .k-raven { color:var(--raven); }
+  .k-camera { color:var(--camera); }
+  .k-airtag,.k-tile,.k-samsung,.k-findmy { color:var(--tracker); }
+  .peer .dot { color:var(--accent); text-shadow:0 0 6px rgba(30,255,157,.7); }
+  .peer.off { opacity:.5; } .peer.off .dot { color:#5a6a72; text-shadow:none; }
+  #tabs { display:flex; margin-bottom:16px; }
+  #tabs button { padding:8px 18px; background:rgba(12,19,32,.7); color:var(--text);
+          border:1px solid #1d2a3a; cursor:pointer; font-size:13px; letter-spacing:1px;
+          text-transform:uppercase; transition:all .12s; flex:1; }
+  #tabs button.active { background:var(--accent); color:#04140d; border-color:var(--accent); }
+  #tabs button:first-child { border-radius:8px 0 0 8px; }
+  #tabs button:last-child { border-radius:0 8px 8px 0; }
+  #map { width:100%; height:56vh; border-radius:10px; border:1px solid rgba(232,194,74,.4); }
+  #map-stats { padding:10px 4px 0; font-size:12px; opacity:.7; }
+  .leaflet-popup-content { font-size:13px; color:#111; }
+  .bar { position:fixed; left:0; right:0; bottom:0; background:rgba(4,7,14,.95);
+         border-top:1px solid rgba(30,255,157,.25); padding:10px 16px; display:flex;
+         gap:14px; align-items:center; font-size:13px; flex-wrap:wrap; backdrop-filter:blur(4px); }
+  .pill { padding:3px 12px; border-radius:20px; font-weight:700; font-size:12px;
+          text-transform:uppercase; letter-spacing:1px; }
+  .pill.clear { background:var(--accent); color:#04140d; }
+  .pill.aware { background:var(--gold); color:#1a1400; }
+  .pill.watched { background:var(--orange); color:#1a0e00; }
+  .pill.targeted { background:var(--corrupt); color:#fff; animation:corruptpulse 1s infinite; }
+  .spacer { flex:1; }
+  #connect { color:var(--accent); background:none; border:1px solid rgba(30,255,157,.5);
+          border-radius:6px; padding:6px 14px; cursor:pointer; font-size:13px; }
+  #connect:hover { color:var(--gold); border-color:var(--gold); }
+  #conn-status { font-size:12px; opacity:.8; }
+  .toprow { display:flex; align-items:center; gap:12px; margin-bottom:14px; flex-wrap:wrap; }
 </style>
 </head>
 <body>
-  <h1>ARGUS</h1>
-  <div class="sub">BLE live link &mdash; pairs over Web Bluetooth (Chrome / Android)</div>
-
-  <div class="row">
-    <button id="connect" class="primary">Connect</button>
-    <button id="refresh" disabled>Detections</button>
-    <span id="status">disconnected</span>
+  <div class="toprow">
+    <div>
+      <h1>ARGUS</h1>
+      <div class="dev" id="dev">BLE link</div>
+    </div>
+    <span class="spacer"></span>
+    <button id="connect">Connect</button>
+    <span id="conn-status">disconnected</span>
   </div>
 
-  <div id="banner" class="banner b-clear">CLEAR</div>
-
-  <div class="tiles">
-    <div class="tile"><div class="n" id="t-flock">0</div><div class="l">FLOCK</div></div>
-    <div class="tile"><div class="n" id="t-drone">0</div><div class="l">DRONE</div></div>
-    <div class="tile"><div class="n" id="t-raven">0</div><div class="l">RAVEN</div></div>
-    <div class="tile"><div class="n" id="t-camera">0</div><div class="l">CAMERA</div></div>
-    <div class="tile"><div class="n" id="t-track">0</div><div class="l">TRACKERS</div></div>
-    <div class="tile" id="t-stingray"><div class="n">&#9679;</div><div class="l">STINGRAY</div></div>
+  <div id="tabs">
+    <button class="active" onclick="showView('threats', this)">Threats</button>
+    <button onclick="showView('map', this)">Map</button>
+    <button onclick="showView('mesh', this)">Mesh</button>
   </div>
 
-  <div class="meta">
-    <span id="m-bat">bat --</span>
-    <span id="m-peers">mesh --</span>
-    <span id="m-up">up --</span>
-    <span id="m-fw">fw --</span>
+  <div id="view-threats">
+    <div class="panel">
+      <h2>Threat Grid</h2>
+      <div class="grid" id="grid">
+        <div class="tile" data-filter="flock_camera"><div class="n" id="t-flock">0</div><div class="l">FLOCK</div></div>
+        <div class="tile" data-filter="drone"><div class="n" id="t-drone">0</div><div class="l">DRONE</div></div>
+        <div class="tile" data-filter="raven"><div class="n" id="t-raven">0</div><div class="l">RAVEN</div></div>
+        <div class="tile" data-filter="camera"><div class="n" id="t-camera">0</div><div class="l">CAMERA</div></div>
+        <div class="tile" data-filter="tracker"><div class="n" id="t-track">0</div><div class="l">TRACKERS</div></div>
+        <div class="tile sr-off" id="t-stingray"><div class="n">&#9679;</div><div class="l">STINGRAY</div></div>
+      </div>
+    </div>
+    <div class="panel">
+      <h2>Live Feed</h2>
+      <table><tbody id="feed"><tr><td>Connect to begin.</td></tr></tbody></table>
+    </div>
   </div>
 
-  <div class="feed" id="feed"><div class="det"><span class="r">No detections yet.</span></div></div>
+  <div id="view-map" style="display:none">
+    <div class="panel">
+      <h2>Map</h2>
+      <div id="map"></div>
+      <div id="map-stats">No GPS-tagged detections yet.</div>
+    </div>
+  </div>
+
+  <div id="view-mesh" style="display:none">
+    <div class="panel">
+      <h2 id="mesh-title">Mesh</h2>
+      <div id="mesh">No peers heard.</div>
+    </div>
+  </div>
+
+  <div class="bar">
+    <span>Uptime: <span id="uptime" class="mono">--</span></span>
+    <span>Battery: <span id="batt" class="mono">--</span></span>
+    <span>Threat: <span id="threat" class="pill clear">clear</span></span>
+    <span class="spacer"></span>
+    <span id="ver" class="mono" style="opacity:.5">v?</span>
+  </div>
 
 <script>
+// --- BLE / Nordic UART Service ---
 const NUS = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
-const RX  = '6e400002-b5a3-f393-e0a9-e50e24dcca9e'; // write (phone -> device)
-const TX  = '6e400003-b5a3-f393-e0a9-e50e24dcca9e'; // notify (device -> phone)
+const RX  = '6e400002-b5a3-f393-e0a9-e50e24dcca9e';
+const TX  = '6e400003-b5a3-f393-e0a9-e50e24dcca9e';
+let rxChar = null, rxBuf = '', timers = [];
+const dec = new TextDecoder(), enc = new TextEncoder();
 
-let rxChar = null;
-let rxBuf = '';
-const dec = new TextDecoder();
-const enc = new TextEncoder();
+// --- state ---
+let feedFilter = null, lastDetections = [];
+let map = null, detMarkers = {}, camMarkers = {}, mapCentered = false;
 
 const $ = (id) => document.getElementById(id);
-function setStatus(s){ $('status').textContent = s; }
+const CLASS_COLORS = { flock_camera:'#ff4444', wifi_device:'#ff8844', drone:'#4488ff',
+  raven:'#9d5cff', camera:'#e8c24a', airtag:'#37e0c0', tile:'#37e0c0',
+  samsung:'#37e0c0', findmy:'#37e0c0' };
+const markerColor = (k) => CLASS_COLORS[k] || '#888888';
+const tileClass = (n) => n === 0 ? 'green' : n <= 2 ? 'yellow' : 'red';
+function fmtUptime(s){ const h=Math.floor(s/3600),m=Math.floor((s%3600)/60); return h+'h '+m+'m'; }
+function ago(s){ if(s<60)return s+'s ago'; if(s<3600)return Math.floor(s/60)+'m ago'; return Math.floor(s/3600)+'h ago'; }
 
+function setTile(id, n){ const el=$(id); el.textContent=n;
+  const t=el.closest('.tile'); const active=t.classList.contains('active');
+  t.className='tile '+tileClass(n)+(active?' active':''); }
+
+function showView(name, btn){
+  document.querySelectorAll('[id^="view-"]').forEach(el=>el.style.display='none');
+  $('view-'+name).style.display='block';
+  document.querySelectorAll('#tabs button').forEach(b=>b.classList.remove('active'));
+  if (btn) btn.classList.add('active');
+  if (name==='map'){ initMap(); setTimeout(()=>map&&map.invalidateSize(),50); send('cameras'); send('detections'); }
+  if (name==='mesh') send('mesh');
+}
+
+// --- map ---
+function initMap(){
+  if (map || typeof L === 'undefined') return;
+  map = L.map('map').setView([20,0], 2);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+    { attribution:'&copy; OpenStreetMap', maxZoom:19 }).addTo(map);
+}
+function centerOn(lat, lon){ if (map && !mapCentered){ map.setView([lat,lon],15); mapCentered=true; } }
+function upsert(store, key, lat, lon, color, radius, popup){
+  if (store[key]){ store[key].setLatLng([lat,lon]).setRadius(radius)
+      .setStyle({fillColor:color}); store[key].getPopup().setContent(popup); }
+  else { store[key]=L.circleMarker([lat,lon],{radius,fillColor:color,color:'#fff',
+      weight:1,fillOpacity:.85}).addTo(map).bindPopup(popup); }
+}
+
+function renderStatus(s){
+  const sb = s.surv_breakdown||{};
+  setTile('t-flock', sb.flock_camera||0); setTile('t-drone', sb.drone||0);
+  setTile('t-raven', sb.raven||0); setTile('t-camera', sb.camera||0);
+  setTile('t-track', s.track_count||0);
+  $('t-stingray').className = 'tile '+(s.stingray_active?'sr-on':'sr-off');
+  const pill=$('threat'); const lv=s.threat_level||'clear';
+  pill.className='pill '+lv; pill.textContent=lv;
+  $('uptime').textContent=fmtUptime(s.uptime_seconds||0);
+  $('batt').textContent=(s.battery_pct??'--')+'%';
+  $('ver').textContent='v'+(s.firmware_version||'?');
+}
+
+function renderFeed(dets){
+  lastDetections = dets;
+  // plot own GPS-tagged detections on the map
+  if (map){
+    const seen=new Set();
+    for (const d of dets){
+      if (!d.lat || !d.lon) continue;
+      const lat=d.lat/1e6, lon=d.lon/1e6; const key='d'+d.oui+d.mac_hash;
+      seen.add(key); centerOn(lat,lon);
+      upsert(detMarkers,key,lat,lon,markerColor(d.kind),7,
+        `<b>${(d.kind||'?').toUpperCase()}</b><br>${d.oui}<br>${d.rssi} dBm · score ${d.score}`);
+    }
+    for (const k in detMarkers){ if(!seen.has(k)){ map.removeLayer(detMarkers[k]); delete detMarkers[k]; } }
+  }
+  const rows = dets.filter(d=>!feedFilter ||
+      (feedFilter==='tracker' && ['airtag','tile','samsung','findmy'].includes(d.kind)) ||
+      d.kind===feedFilter)
+    .map(d=>{ const src=d.source==='mesh'?' <span style="opacity:.6">(mesh)</span>':' (direct)';
+      return `<tr class="k-${d.kind}"><td>${(d.kind||'?').toUpperCase().slice(0,3)}</td>
+        <td class="mono">${d.oui}</td><td class="mono">${d.rssi}</td>
+        <td>${d.level}</td><td class="mono">${d.methods}</td><td>${src}</td></tr>`; });
+  $('feed').innerHTML = rows.length ? rows.join('') : '<tr><td>No matching detections.</td></tr>';
+  updateMapStats();
+}
+
+function renderCameras(cams){
+  if (!map) return;
+  const seen=new Set();
+  for (const c of cams){
+    if (!c.lat || !c.lon) continue;
+    const lat=c.lat/1e6, lon=c.lon/1e6; const key='c'+c.id; seen.add(key); centerOn(lat,lon);
+    upsert(camMarkers,key,lat,lon,markerColor(c.kind),Math.min(24,Math.max(8,c.count||8)),
+      `<b>${(c.kind||'?').toUpperCase()}</b><br>${c.oui}<br>Seen ${c.count}x by ${c.reporters} peer(s)<br>${c.best_rssi} dBm`);
+  }
+  for (const k in camMarkers){ if(!seen.has(k)){ map.removeLayer(camMarkers[k]); delete camMarkers[k]; } }
+  updateMapStats();
+}
+
+function updateMapStats(){
+  const d=Object.keys(detMarkers).length, c=Object.keys(camMarkers).length;
+  $('map-stats').textContent = (d+c) ? `${d} local detections · ${c} mesh cameras mapped`
+    : 'No GPS-tagged detections yet (needs the GPS module).';
+}
+
+function renderMesh(peers){
+  const online=peers.filter(p=>p.last_seen_seconds<300).length;
+  $('mesh-title').textContent=`Mesh (${online} peers online)`;
+  $('mesh').innerHTML = peers.length ? peers.map(p=>{ const off=p.last_seen_seconds>=300;
+    return `<div class="peer ${off?'off':''}"><span class="dot">&#9679;</span> ${p.id}
+      &nbsp; ${ago(p.last_seen_seconds)} &nbsp; ${p.rssi} dBm &nbsp; ${p.detections_shared} shared</div>`;
+    }).join('') : 'No peers heard.';
+}
+
+function renderConfig(cfg){
+  if (cfg.device_name) $('dev').textContent = cfg.device_name + (cfg.role?(' · '+cfg.role):'');
+}
+
+// --- message routing (tagged stream: <tag><json>\n) ---
+function handleLine(line){
+  if (!line) return;
+  const tag = line[0]; let obj;
+  try { obj = JSON.parse(line.slice(1)); } catch(_) { return; }
+  switch (tag){
+    case 'S': renderStatus(obj); break;
+    case 'D': renderFeed(obj); break;
+    case 'M': renderMesh(obj); break;
+    case 'C': renderCameras(obj); break;
+    case 'G': renderConfig(obj); break;
+  }
+}
+function onNotify(ev){
+  rxBuf += dec.decode(ev.target.value);
+  let nl; while ((nl = rxBuf.indexOf('\n')) >= 0){
+    handleLine(rxBuf.slice(0, nl)); rxBuf = rxBuf.slice(nl+1);
+  }
+}
+
+// --- BLE connect / pair ---
 async function connect(){
-  if (!navigator.bluetooth){ setStatus('Web Bluetooth unsupported'); return; }
+  if (!navigator.bluetooth){ $('conn-status').textContent='Web Bluetooth unsupported'; return; }
   try{
-    setStatus('requesting...');
+    $('conn-status').textContent='requesting...';
     const dev = await navigator.bluetooth.requestDevice({ filters:[{ services:[NUS] }] });
     dev.addEventListener('gattserverdisconnected', onDisconnect);
-    setStatus('connecting...');
+    $('conn-status').textContent='connecting...';
     const server = await dev.gatt.connect();
     const svc = await server.getPrimaryService(NUS);
     const tx = await svc.getCharacteristic(TX);
     rxChar = await svc.getCharacteristic(RX);
     await tx.startNotifications();
     tx.addEventListener('characteristicvaluechanged', onNotify);
-    setStatus('paired \u2014 live'); // accessing RX triggers OS pairing (enter OLED passkey)
-    $('refresh').disabled = false;
-    $('connect').textContent = 'Connected';
-    // Kick the device once; status is auto-pushed ~1.5s thereafter.
-    send('status');
-  }catch(e){ setStatus('error: ' + e.message); }
+    $('conn-status').textContent='paired \u2014 live';
+    $('connect').textContent='Connected';
+    // initial pulls; status auto-pushes ~1.5s
+    send('config'); send('status'); send('detections'); send('mesh'); send('cameras');
+    timers.push(setInterval(()=>send('detections'), 6000));
+    timers.push(setInterval(()=>send('mesh'), 30000));
+    timers.push(setInterval(()=>send('cameras'), 30000));
+  }catch(e){ $('conn-status').textContent='error: '+e.message; }
 }
-
 function onDisconnect(){
-  setStatus('disconnected'); rxChar = null; rxBuf = '';
-  $('refresh').disabled = true; $('connect').textContent = 'Connect';
+  $('conn-status').textContent='disconnected'; $('connect').textContent='Connect';
+  rxChar=null; rxBuf=''; timers.forEach(clearInterval); timers=[];
 }
-
 async function send(cmd){
   if (!rxChar) return;
-  try{ await rxChar.writeValue(enc.encode(cmd)); }
-  catch(e){ setStatus('write failed: ' + e.message); }
+  try { await rxChar.writeValue(enc.encode(cmd)); } catch(e){}
 }
 
-function onNotify(ev){
-  rxBuf += dec.decode(ev.target.value);
-  let nl;
-  while ((nl = rxBuf.indexOf('\n')) >= 0){
-    const line = rxBuf.slice(0, nl).trim();
-    rxBuf = rxBuf.slice(nl + 1);
-    if (!line) continue;
-    let obj; try{ obj = JSON.parse(line); }catch(_){ continue; }
-    if (Array.isArray(obj)) renderDetections(obj);
-    else if ('uptime_seconds' in obj) renderStatus(obj);
-  }
-}
-
-function renderStatus(s){
-  const sb = s.surv_breakdown || {};
-  $('t-flock').textContent  = sb.flock_camera ?? 0;
-  $('t-drone').textContent  = sb.drone ?? 0;
-  $('t-raven').textContent  = sb.raven ?? 0;
-  $('t-camera').textContent = sb.camera ?? 0;
-  $('t-track').textContent  = s.track_count ?? 0;
-  $('t-stingray').className = 'tile' + (s.stingray_active ? ' on' : '');
-
-  const lvl = s.threat_level || 'clear';
-  const b = $('banner');
-  b.className = 'banner b-' + lvl;
-  b.textContent = lvl.toUpperCase();
-
-  $('m-bat').textContent = 'bat ' + (s.battery_pct ?? '--') + '%';
-  $('m-peers').textContent = 'mesh ' + (s.mesh_peers ?? 0);
-  $('m-up').textContent = 'up ' + fmtUp(s.uptime_seconds ?? 0);
-  $('m-fw').textContent = 'fw ' + (s.firmware_version || '--');
-}
-
-function fmtUp(sec){
-  const h = Math.floor(sec/3600), m = Math.floor((sec%3600)/60);
-  return h ? `${h}h${m}m` : `${m}m`;
-}
-
-function renderDetections(arr){
-  const feed = $('feed');
-  if (!arr.length){ feed.innerHTML = '<div class="det"><span class="r">No detections.</span></div>'; return; }
-  feed.innerHTML = arr.map(d => {
-    const mac = `${d.oui}:${(d.mac_hash||'').replace(/(..)(..)(..)/,'$1:$2:$3')}`;
-    return `<div class="det">
-      <span class="k k-${d.kind}">${(d.kind||'?').toUpperCase()}</span>
-      <span class="r">${mac}</span>
-      <span class="r">${d.rssi}dBm</span>
-      <span class="lvl-${d.level}">${d.score}</span>
-    </div>`;
-  }).join('');
-}
+// tile filter
+document.querySelectorAll('.tile[data-filter]').forEach(t=>{
+  t.addEventListener('click', ()=>{
+    const f=t.dataset.filter;
+    feedFilter = feedFilter===f ? null : f;
+    document.querySelectorAll('.tile').forEach(x=>x.classList.remove('active'));
+    if (feedFilter) t.classList.add('active');
+    renderFeed(lastDetections);
+  });
+});
 
 $('connect').addEventListener('click', connect);
-$('refresh').addEventListener('click', () => send('detections'));
 </script>
 </body>
 </html>

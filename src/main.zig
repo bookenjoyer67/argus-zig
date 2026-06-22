@@ -392,12 +392,15 @@ var hopping_enabled: bool = false;
 var ble_json_buf: [8192]u8 = undefined;
 var ble_last_push_ms: u32 = 0;
 
-/// Render a JSON body via one of the api.zig functions and stream it,
-/// newline-framed, to the connected/paired phone.
-fn bleStream(render: *const fn ([*]u8, u32) callconv(.c) u32) void {
-    const n = render(&ble_json_buf, ble_json_buf.len - 1);
-    ble_json_buf[n] = '\n';
-    _ = ble_gatt_send(&ble_json_buf, n + 1);
+/// Render a JSON body via one of the api.zig functions and stream it to the
+/// connected/paired phone. Each message is `<tag><json>\n`: the 1-char tag
+/// (S/D/M/C/G) lets the client route the stream unambiguously, including
+/// empty arrays. The newline frames the message.
+fn bleStream(tag: u8, render: *const fn ([*]u8, u32) callconv(.c) u32) void {
+    ble_json_buf[0] = tag;
+    const n = render(ble_json_buf[1..].ptr, ble_json_buf.len - 2);
+    ble_json_buf[1 + n] = '\n';
+    _ = ble_gatt_send(&ble_json_buf, n + 2);
 }
 
 /// Only threats seen within this window drive the LED (scores never decay).
@@ -792,17 +795,19 @@ export fn zig_main() callconv(.c) void {
             if (clen > 0) {
                 const c = cmd[0..@intCast(clen)];
                 if (std.mem.startsWith(u8, c, "detections")) {
-                    bleStream(&api.zig_api_detections);
+                    bleStream('D', &api.zig_api_detections);
                 } else if (std.mem.startsWith(u8, c, "mesh")) {
-                    bleStream(&api.zig_api_mesh);
+                    bleStream('M', &api.zig_api_mesh);
                 } else if (std.mem.startsWith(u8, c, "cameras")) {
-                    bleStream(&api.zig_api_cameras);
+                    bleStream('C', &api.zig_api_cameras);
+                } else if (std.mem.startsWith(u8, c, "config")) {
+                    bleStream('G', &api.zig_api_config);
                 } else {
-                    bleStream(&api.zig_api_status);
+                    bleStream('S', &api.zig_api_status);
                 }
             }
             if ((tick_ms -% ble_last_push_ms) >= 1500) {
-                bleStream(&api.zig_api_status);
+                bleStream('S', &api.zig_api_status);
                 ble_last_push_ms = tick_ms;
             }
         }
