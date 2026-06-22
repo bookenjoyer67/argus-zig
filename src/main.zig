@@ -286,6 +286,8 @@ pub const TrackerEntry = struct {
     rssi_history: [5]i8,     // recent RSSI values (ring buffer)
     rssi_hidx: u3,           // write index into rssi_history
     source: u8,              // 0 = direct (this unit), 1 = mesh (peer-relayed)
+    mesh_lat: i32 = 0,       // GPS from a mesh detection (source == 1)
+    mesh_lon: i32 = 0,       // GPS from a mesh detection (source == 1)
 };
 
 pub var trackers: [MAX_TRACKERS]TrackerEntry = undefined;
@@ -711,6 +713,16 @@ export fn zig_main() callconv(.c) void {
         // Roll the carrier-probe bucket window and check for / clear alerts.
         scanner.burstTick(tick_ms);
         scanner.burstClearCheck(tick_ms);
+
+        // --- LoRa mesh heartbeat ---
+        // Refresh diagnostics and broadcast presence every 30s so peers/base
+        // know we're alive without waiting for a detection event.
+        mesh.mesh_battery_mv = @intCast(@max(0, @min(65535, battery_read_mv())));
+        mesh.mesh_uptime_sec = tick_ms / 1000;
+        if ((tick_ms -% mesh.last_heartbeat_ms) >= mesh.HEARTBEAT_INTERVAL_MS) {
+            mesh.last_heartbeat_ms = tick_ms;
+            mesh.sendHeartbeat();
+        }
 
         // --- LoRa mesh polling ---
         // Check for received mesh packets, process into tracker table.

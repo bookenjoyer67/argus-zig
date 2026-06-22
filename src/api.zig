@@ -153,8 +153,10 @@ pub export fn zig_api_detections(out: [*]u8, max: u32) callconv(.c) u32 {
         addMethods(&b, t.methods);
         b.add(",", .{});
         b.add("\"source\":\"{s}\",", .{if (t.source == 1) "mesh" else "direct"});
-        b.add("\"lat\":{d},", .{scanner.gps_lat});
-        b.add("\"lon\":{d}", .{scanner.gps_lon});
+        const dlat = if (t.source == 1) t.mesh_lat else scanner.gps_lat;
+        const dlon = if (t.source == 1) t.mesh_lon else scanner.gps_lon;
+        b.add("\"lat\":{d},", .{dlat});
+        b.add("\"lon\":{d}", .{dlon});
         b.add("}}", .{});
         emitted += 1;
     }
@@ -178,6 +180,31 @@ pub export fn zig_api_mesh(out: [*]u8, max: u32) callconv(.c) u32 {
         b.add("\"rssi\":{d},", .{p.rssi});
         b.add("\"detections_shared\":{d}", .{p.shared});
         b.add("}}", .{});
+    }
+    b.add("]", .{});
+    return @intCast(b.len);
+}
+
+// ================================================================
+// GET /api/cameras — aggregated mesh camera map (base station)
+// ================================================================
+pub export fn zig_api_cameras(out: [*]u8, max: u32) callconv(.c) u32 {
+    var b = Buf{ .data = out[0..max] };
+    b.add("[", .{});
+    var emitted: u32 = 0;
+    for (0..mesh.camera_map_count) |i| {
+        const c = mesh.camera_map[i];
+        if (emitted > 0) b.add(",", .{});
+        b.add("{{", .{});
+        b.add("\"oui\":\"{X:0>2}:{X:0>2}:{X:0>2}\",", .{ c.oui[0], c.oui[1], c.oui[2] });
+        b.add("\"count\":{d},", .{c.count});
+        b.add("\"reporters\":{d},", .{c.reporter_count});
+        b.add("\"best_rssi\":{d},", .{c.best_rssi});
+        b.add("\"lat\":{d},", .{c.lat});
+        b.add("\"lon\":{d},", .{c.lon});
+        b.add("\"last_seen_seconds\":{d}", .{(main.tick_ms -% c.last_seen) / 1000});
+        b.add("}}", .{});
+        emitted += 1;
     }
     b.add("]", .{});
     return @intCast(b.len);

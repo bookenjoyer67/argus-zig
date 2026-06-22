@@ -29,6 +29,7 @@ extern const char dashboard_html_start[] asm("_binary_dashboard_html_start");
 extern uint32_t zig_api_status(uint8_t *buf, uint32_t max);
 extern uint32_t zig_api_detections(uint8_t *buf, uint32_t max);
 extern uint32_t zig_api_mesh(uint8_t *buf, uint32_t max);
+extern uint32_t zig_api_cameras(uint8_t *buf, uint32_t max);
 extern uint32_t zig_api_config(uint8_t *buf, uint32_t max);
 
 // Config persistence (main/config.c)
@@ -149,6 +150,7 @@ static esp_err_t send_json_from_zig(httpd_req_t *req,
 static esp_err_t h_status(httpd_req_t *req)     { return send_json_from_zig(req, zig_api_status); }
 static esp_err_t h_detections(httpd_req_t *req) { return send_json_from_zig(req, zig_api_detections); }
 static esp_err_t h_mesh(httpd_req_t *req)       { return send_json_from_zig(req, zig_api_mesh); }
+static esp_err_t h_cameras(httpd_req_t *req)    { return send_json_from_zig(req, zig_api_cameras); }
 static esp_err_t h_config_get(httpd_req_t *req) { return send_json_from_zig(req, zig_api_config); }
 
 static esp_err_t h_config_set(httpd_req_t *req) {
@@ -216,6 +218,7 @@ int httpd_start_server(int setup_mode) {
         register_uri("/api/status", HTTP_GET, h_status);
         register_uri("/api/detections", HTTP_GET, h_detections);
         register_uri("/api/mesh", HTTP_GET, h_mesh);
+        register_uri("/api/cameras", HTTP_GET, h_cameras);
         register_uri("/api/export/csv", HTTP_GET, h_export_csv);
         register_uri("/api/config", HTTP_GET, h_config_get);
         register_uri("/api/config", HTTP_POST, h_config_set);
