@@ -8,7 +8,12 @@ Last updated: June 22, 2026
 ## Complete
 
 ### Flock Safety ALPR Cameras
-- 33 MAC OUI prefixes (original 31 + 2 newer deployments)
+- Identified by the `Flock-XXXX` SSID (classifies as `.flock_camera`
+  regardless of OUI) — the reliable signal
+- The circulating "Flock" OUI lists were audited against the IEEE DB and found
+  to be 100% commodity module vendors (Liteon/USI/SiLabs/Espressif/Samsung/
+  Nintendo/Meraki), not Flock — reclassified as `commodity`/generic (silent,
+  score 25), kept only for SSID corroboration + Devices-page visibility
 - WiFi promiscuous sniffer captures management and data frames
 - SSID "Flock-XXXX" format validation with hex digit check
 - Camera sleep-cycle awareness — detection window depends on camera duty cycle
@@ -39,6 +44,12 @@ Last updated: June 22, 2026
 - SSID keyword matching: hikvision, dahua, reolink, amcrest, camera, cam_, ring
 - Case-insensitive matching
 - Separate .camera threat class from .flock_camera
+- Category-aware OUI cap: camera/drone-category OUI-only hits cap at 50 (MED) —
+  surface as `.camera`/`.drone` on the surveillance page with LED pulse + LoRa
+  mesh; vendor name (from the ouis.txt section) shown on the Devices page
+- TODO: audit camera/drone OUIs against the IEEE DB like the Flock list was —
+  shared-vendor OUIs (e.g. Google spans Nest/Chromecast/Pixel) risk MED-level
+  camera false positives
 
 ### BLE Tracker Classification
 - Data-driven BLE_SIGNATURES table — 8 entries
@@ -77,12 +88,14 @@ Last updated: June 22, 2026
 - See STINGRAY.md for algorithm details
 
 ### Display / UX
-- 7 OLED pages with 500ms live refresh on all pages
-- Summary: SURV + TRACK counters (.wifi_device excluded from SURV)
+- 8 OLED pages with 500ms live refresh on all pages
+- Summary: SURV + TRACK counters (.wifi_device counts as TRACK, not SURV)
 - Surveillance page: filtered to .flock_camera, .drone, .raven, .camera only
 - Proximity page: big RSSI, trend arrow, distance word, bar
 - History page: 5-bar chart, 12-min buckets, proper ordering
 - Trackers page: AirTag/Tile/Samsung/FindMy list
+- Devices page: every OUI-matched device by vendor name + RSSI + "?", any
+  score (visibility only — no alerts, OUI-only/commodity hits live here)
 - LED threat-level patterns (sleep/scan/clear/aware/watched/targeted/error)
 - Battery voltage + percentage bar
 - GPS status display
@@ -146,7 +159,8 @@ Planned in LAYERS_1_2.md. Not started.
 
 ```
 .flock_camera   — Flock Safety ALPR (OUI + SSID corroboration)
-.wifi_device    — WiFi device with known surveillance OUI
+.wifi_device    — commodity/generic OUI match, no SSID (visibility only,
+                  capped at 25, shown on Devices page, counts as TRACK)
 .drone          — Drone Remote ID (ASTM F3411, WiFi or BLE)
 .raven          — Raven/ShotSpotter gunshot sensor (BLE UUIDs)
 .camera         — Consumer/commercial surveillance camera (OUI + SSID)
@@ -163,10 +177,13 @@ Stingray detection is not a TrackerType — it's an alert flag with special disp
 
 ## OUI Database
 
-73 MAC OUI prefixes in `src/ouis.txt`, parsed at compile time:
+72 MAC OUI prefixes in `src/ouis.txt`, parsed at compile time into `OUI_DB`
+(prefix + vendor name + category):
 
 ```
-33 Flock Safety
+32 Commodity modules / generic (Liteon 21, USI 2, SiLabs 3, Espressif 2,
+   Samsung 1, Nintendo 1, Meraki 1, unverified 1) — chips Flock cameras use
+   but NOT Flock-exclusive; Flock itself is detected by the Flock-XXXX SSID
  3 Ring/Blink
  3 Google Nest
  2 Arlo

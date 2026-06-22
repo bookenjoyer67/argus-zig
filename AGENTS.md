@@ -47,7 +47,7 @@ src/main.zig     998L    ← Entry point, main loop, extern fns, OUI_DB (vendor/
                            WiFi channel hopping, BLE GATT stream push
 src/scanner.zig  774L    ← BLE/WiFi classifiers, scoring, NMEA parser, CSV logging,
                            BLE_SIGNATURES table, Stingray burst detector, OUI-only cap
-src/display.zig  791L    ← SSD1306 driver, 5x7 font, 7-page UI, LED alerts, passkey screen
+src/display.zig  791L    ← SSD1306 driver, 5x7 font, 8-page UI (incl. Devices), LED alerts, passkey screen
 src/mesh.zig     376L    ← LoRa mesh packets, CRC, heartbeats, peer/camera map
 src/api.zig      242L    ← JSON renderers (status/detections/mesh/cameras/config)
 src/config.zig    30L    ← Device config struct, SPIFFS load/save
@@ -78,12 +78,17 @@ GNU ld can't resolve. ReleaseSafe is ~20KB larger but links correctly.
 Edit ouis.txt, rebuild, done.
 
 **OUI-only WiFi cap (category-aware)** — An OUI match tells you the chip, not
-the device. Without SSID corroboration (Flock-XXXX, camera keywords, Remote ID),
-general-purpose chips (Liteon/Flock) cap at 25 — tracked and logged but silent.
+the device. Flock Safety is identified by its `Flock-XXXX` SSID, not its OUI:
+the "Flock" OUI lists circulating online are all commodity module vendors
+(Liteon/Espressif/USI/SiLabs/Samsung/Nintendo/Meraki) that appear in countless
+home devices, so they are filed as `generic` and cap at 25 — tracked and logged
+but silent. A `Flock-XXXX` SSID classifies as `.flock_camera` regardless of OUI.
 Camera/drone-manufacturer chips rarely appear outside surveillance products, so
-they cap at 50 (MEDIUM): surfaced as `.camera`/`.drone`, shown on the surveillance
-page with an LED pulse, but no buzzer or LoRa broadcast. Category comes from the
-ouis.txt section the OUI sits under (see CAMERA_DETECTION.md).
+they cap at 50 (MEDIUM): surfaced as `.camera`/`.drone`, shown on the
+surveillance page with an LED pulse and broadcast over the LoRa mesh (no buzzer
+is fitted). Category comes from the ouis.txt section the OUI sits under — keyword
+`commodity` → generic, `camera`/`surveillance` → camera, `drone`/`remote id` →
+drone (see CAMERA_DETECTION.md).
 
 **Fixed tracker table** — [MAX_TRACKERS] static array. No heap, no fragmentation.
 
@@ -100,6 +105,8 @@ CSV logging, UX. extern fn boundary is the API.
 4. Trackers — AirTag, Tile, Samsung, FindMy rows with MAC/RSSI
 5. Stats — session uptime, detection totals
 6. System — heap, flash, battery V, tracker table usage
+7. Devices — every OUI-matched device by vendor name + RSSI + "?", any score
+   (visibility page: no alerts, no SURV counter; OUI-only/commodity hits live here)
 
 Stingray alert overlays on summary page and appears as a row on page 1 when active.
 
@@ -140,7 +147,7 @@ During BLE pairing the OLED shows a 6-digit passkey screen to enter on the phone
 ## Pin map (Heltec V3)
 
 GPIO 35: LED (onboard white, active HIGH)
-GPIO 3:  Buzzer (piezo, J3 pin 14)
+GPIO 3:  Free (was piezo buzzer — no buzzer fitted; alerts are LED-only)
 GPIO 0:  Button (PRG, active LOW, pullup)
 GPIO 17: OLED SDA (I2C, internal)
 GPIO 18: OLED SCL (I2C, internal)
@@ -148,7 +155,7 @@ GPIO 21: OLED RST (J2 pin 16)
 GPIO 1:  Battery ADC (390k/100k divider)
 GPIO 36: Vext control (active LOW)
 
-Free: GPIO 2,4,5,6,7 (J3), GPIO 47,48 (J2)
+Free: GPIO 2,3,4,5,6,7 (J3), GPIO 47,48 (J2)
 Reserved: GPIO 33,34,37,38 (SPI flash), 26 (SubSPI), 45,46 (strapping),
           8-14 (LoRa SX1262), 43,44 (UART0)
 
@@ -168,7 +175,9 @@ Reserved: GPIO 33,34,37,38 (SPI flash), 26 (SubSPI), 45,46 (strapping),
 - Add C functions as `pub extern fn` in `src/main.zig`
 - Add OUIs to `src/ouis.txt` under a `# Section` header — the nearest preceding
   comment sets the vendor name; a header keyword (flock/drone/remote id/camera/
-  surveillance) sets the running category that drives the OUI-only score cap
+  surveillance/commodity) sets the running category that drives the OUI-only
+  score cap. NOTE: "Flock" OUI lists are commodity modules — file new chip-vendor
+  OUIs as `commodity` (generic), not flock; Flock is detected by SSID
 - Add BLE signatures to `BLE_SIGNATURES` table in `src/scanner.zig` line ~80
 - Add BLE stream commands in the `main.zig` RX dispatch (tagged S/D/M/C/G,
   rendered by `api.zig`); WiFi channels live in `HOP_CHANNELS` in `main.zig`
@@ -185,8 +194,8 @@ Reserved: GPIO 33,34,37,38 (SPI flash), 26 (SubSPI), 45,46 (strapping),
 
 ## Known issues
 
-1. **Buzzer blocks during tone.** Fine for chirps <200ms. For longer tones,
-   switch to LEDC PWM.
+1. **No buzzer fitted.** Alerts are LED-only via LEDC PWM (threat-level
+   brightness patterns). GPIO 3 is free if a piezo is ever added.
 
 2. **BLE scan and WiFi promiscuous share the radio.** ESP32 coexistence
    handles this but scan intervals may shift under heavy WiFi traffic. An

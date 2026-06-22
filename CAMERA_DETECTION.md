@@ -9,6 +9,28 @@ Two approaches to surface them. Pick one or combine both.
 
 ---
 
+## Status: IMPLEMENTED (both A + B)
+
+Both approaches shipped. `src/main.zig` builds an `OUI_DB` at comptime
+(prefix + vendor name + category) from `ouis.txt` section headers; the OLED
+**Devices page (7)** lists every OUI-matched device by vendor name + RSSI + "?"
+(Approach A); `computeScore` caps OUI-only hits per category — camera/drone at
+50 (MEDIUM, surveillance page + LED pulse + LoRa mesh), generic at 25 (silent)
+(Approach B). Category keyword `commodity` → generic was added to the parser.
+
+**Flock-OUI audit finding:** while wiring this up, the entire "Flock Safety"
+OUI list (from Flock-You / DeFlockJoplin) was cross-checked against the IEEE OUI
+database and found to be **100% commodity chip/module vendors** — Liteon, USI,
+Silicon Labs, Espressif, Samsung, Nintendo, Cisco Meraki — none registered to
+Flock. They false-positived on ordinary home devices (a Liteon-equipped router,
+an ESP32 gadget, a Nintendo Switch). The list was reclassified as `commodity`
+(generic) with true vendor names, and Flock detection now relies on the
+`Flock-XXXX` SSID (which classifies as `.flock_camera` regardless of OUI).
+**Lesson:** "observed-prefix" OUI lists are module vendors, not the brand —
+audit camera/drone sections the same way before trusting their MED cap.
+
+---
+
 ## Approach A: "All Devices" OLED Page
 
 Add a page 7: "Devices" — shows every OUI-matched device regardless of score.
