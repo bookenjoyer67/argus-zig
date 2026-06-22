@@ -91,6 +91,11 @@ const portTICK_PERIOD_MS: u32 = 10;
 extern fn oled_i2c_init() i32;
 extern fn oled_i2c_write(control_byte: u8, data: [*]const u8, len: u32) i32;
 
+// BLE scanner — NimBLE runs in its own FreeRTOS task, pushing results
+// to a lock-free ring buffer. ble_scan_poll drains one result.
+// Returns 1 if data available, 0 if buffer empty.
+extern fn ble_scan_poll(addr_out: [*]u8, rssi_out: *i8, adv_type_out: *u8, data_out: [*]u8, data_len_out: *u8) i32;
+
 // ================================================================
 // HELTEC V3 PIN DEFINITIONS
 // ================================================================
@@ -233,6 +238,100 @@ const TrackerEntry = struct {
 var trackers: [MAX_TRACKERS]TrackerEntry = undefined;
 var tracker_count: usize = 0;
 var tick_ms: u32 = 0; // monotonic millisecond counter, wraps after ~49 days
+
+// ================================================================
+// BLE ADVERTISEMENT PARSER
+// ================================================================
+//
+// BLE advertisement data uses TLV format:
+//   [length:1][type:1][value: length-1]...
+//
+// Key AD types:
+//   0xFF = Manufacturer Specific Data (2-byte company ID LE + payload)
+//   0x02,0x03 = 16-bit Service UUIDs (incomplete/complete list)
+//   0x06,0x07 = 128-bit Service UUIDs
+//
+// Tracker identification:
+//   Apple Find My:  AD 0xFF, company 0x004C, payload byte 0 == 0x12
+//   Tile:           AD 0x03 or 0x02, UUID 0xFEED
+//   Samsung:        AD 0xFF, company 0x0075
+
+/// Parse BLE advertisement data and classify the tracker type.
+fn classifyBle(adv_data: []const u8) TrackerType {
+    var pos: usize = 0;
+    while (pos + 1 < adv_data.len) {
+        const len = adv_data[pos];
+        if (len == 0) break;
+        if (pos + 1 + len > adv_data.len) break;
+        const ad_type = adv_data[pos + 1];
+        const payload = adv_data[pos + 2 .. pos + 1 + len];
+
+        if (ad_type == 0xFF and payload.len >= 3) {
+            // Manufacturer Specific Data
+            const company: u16 = @as(u16, payload[0]) | (@as(u16, payload[1]) << 8);
+            if (company == 0x004C and payload.len >= 3 and payload[2] == 0x12) {
+                return .airtag;
+            }
+            if (company == 0x0075) {
+                return .samsung;
+            }
+        }
+
+        if ((ad_type == 0x02 or ad_type == 0x03) and payload.len >= 2) {
+            // 16-bit Service UUID (incomplete or complete list)
+            var uuid_pos: usize = 0;
+            while (uuid_pos + 1 < payload.len) : (uuid_pos += 2) {
+                const uuid: u16 = @as(u16, payload[uuid_pos]) | (@as(u16, payload[uuid_pos + 1]) << 8);
+                if (uuid == 0xFEED) return .tile;
+            }
+        }
+
+        pos += 1 + len;
+    }
+    return .unknown;
+}
+
+/// Add or update a tracker entry for the given MAC address.
+/// If the MAC is already in the table, update RSSI and last_seen.
+/// Otherwise, add a new entry (evict oldest if full).
+fn trackBle(mac: [6]u8, kind: TrackerType, rssi: i8) void {
+    // Check if already tracked
+    for (0..tracker_count) |i| {
+        if (std.mem.eql(u8, &trackers[i].mac, &mac)) {
+            trackers[i].rssi = rssi;
+            trackers[i].last_seen = tick_ms;
+            if (kind != .unknown) trackers[i].kind = kind;
+            return;
+        }
+    }
+
+    // New tracker — add to table
+    if (tracker_count < MAX_TRACKERS) {
+        trackers[tracker_count] = .{
+            .mac = mac,
+            .kind = kind,
+            .rssi = rssi,
+            .last_seen = tick_ms,
+        };
+        tracker_count += 1;
+    } else {
+        // Evict oldest entry
+        var oldest_idx: usize = 0;
+        var oldest_time: u32 = trackers[0].last_seen;
+        for (1..MAX_TRACKERS) |i| {
+            if (trackers[i].last_seen < oldest_time) {
+                oldest_time = trackers[i].last_seen;
+                oldest_idx = i;
+            }
+        }
+        trackers[oldest_idx] = .{
+            .mac = mac,
+            .kind = kind,
+            .rssi = rssi,
+            .last_seen = tick_ms,
+        };
+    }
+}
 
 // ================================================================
 // GPIO HELPERS
@@ -685,19 +784,60 @@ export fn zig_main() callconv(.c) void {
     // MAIN LOOP
     // ================================================================
     //
-    // Single-threaded cooperative loop. No interrupts, no callbacks.
-    // All work happens inline:
-    //   1. Check button (with debounce)
-    //   2. Cycle display page on short press
+    // Single-threaded cooperative loop. NimBLE runs in its own task
+    // and pushes scan results into a ring buffer. This loop:
+    //   1. Drains the BLE ring buffer, classifies devices, updates table
+    //   2. Checks button (with debounce)
     //   3. Heartbeat LED every 3 seconds
-    //   4. Sleep 10ms
+    //   4. Sleeps 10ms
     //
-    // Future additions (BLE scan, WiFi promiscuous) will run
-    // in FreeRTOS tasks that push results into a lock-free
-    // ring buffer. This loop drains the buffer and updates
-    // the display.
+    // WiFi promiscuous mode (Phase 2) will add a second ring buffer here.
+
+    var had_new: bool = false; // true if a new tracker was detected this iteration
 
     while (true) {
+        had_new = false;
+
+        // --- BLE scan polling ---
+        // Drain all available results from the NimBLE ring buffer.
+        // Classify each device and update the tracker table.
+        // Flag new detections for alert + display refresh.
+
+        var ble_addr: [6]u8 = undefined;
+        var ble_rssi: i8 = undefined;
+        var ble_adv_type: u8 = undefined;
+        var ble_data: [31]u8 = undefined;
+        var ble_data_len: u8 = undefined;
+
+        var poll_count: u32 = 0;
+        while (ble_scan_poll(&ble_addr, &ble_rssi, &ble_adv_type, &ble_data, &ble_data_len) != 0) {
+            poll_count += 1;
+            const kind = classifyBle(ble_data[0..ble_data_len]);
+            // Check if this MAC is already tracked
+            const is_new = blk: {
+                for (0..tracker_count) |i| {
+                    if (std.mem.eql(u8, &trackers[i].mac, &ble_addr)) break :blk false;
+                }
+                break :blk true;
+            };
+
+            trackBle(ble_addr, kind, ble_rssi);
+
+            if (is_new) {
+                had_new = true;
+            }
+
+            // Yield every 8 events to avoid watchdog timeout
+            if (poll_count % 8 == 0) {
+                delayMs(5);
+            }
+        }
+
+        if (had_new) {
+            alertNew();
+            drawPage();
+        }
+
         // --- Button handling ---
         // Debounce: wait 50ms after first press, re-read.
         // If still pressed, it's a real press (not noise).

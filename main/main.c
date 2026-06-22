@@ -29,6 +29,9 @@
 // Defined in Zig (src/main.zig), compiled into libargus.a
 extern void zig_main(void);
 
+// Defined in ble.c
+extern int ble_scan_init(void);
+
 // ================================================================
 // OLED I2C helpers — called from Zig via extern fn
 // ================================================================
@@ -197,6 +200,11 @@ void app_main(void) {
     }
 
     printf("Argus Zig — booting\n");
+
+    // --- Start BLE scanning ---
+    // NimBLE initializes and begins passive scanning in its own task.
+    // Results are pushed to a ring buffer, polled from zig_main().
+    ble_scan_init();
 
     // --- Hand off to Zig ---
     //

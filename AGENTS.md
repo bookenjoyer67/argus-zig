@@ -12,6 +12,8 @@ Zero external parts for basic operation. AGPLv3.
 cd ~/argus-zig
 ./build-zig.sh                    # Zig → zig-out/libargus.a  (2s)
 source ~/esp/esp-idf/export.sh    # ESP-IDF env
+idf.py set-target esp32s3         # Once — generates sdkconfig
+python3 tools/patch-sdkconfig.py  # Inject NimBLE configs (Kconfig choice workaround)
 idf.py build                      # ESP-IDF → build/argus-zig.bin  (5s cached)
 idf.py -p /dev/ttyUSB0 flash monitor  # Flash and monitor
 ```
@@ -21,6 +23,11 @@ The build is two-stage by design:
 2. `idf.py build` compiles ESP-IDF components and links the Zig library
 
 **Never** skip step 1 before step 2 — idf.py does not trigger the Zig build.
+
+**sdkconfig note:** `CONFIG_BT_NIMBLE_ENABLED` cannot be set via `sdkconfig.defaults` due to
+ESP-IDF v5.4 Kconfig choice dependency resolution. `tools/patch-sdkconfig.py` injects
+the required BT/NimBLE configs directly. Run it after `idf.py set-target` and whenever
+sdkconfig is regenerated.
 
 ## Toolchain
 
