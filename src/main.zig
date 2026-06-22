@@ -105,7 +105,7 @@ pub extern fn ble_scan_poll(addr_out: [*]u8, rssi_out: *i8, adv_type_out: *u8, d
 // WiFi promiscuous sniffer — callback pushes simplified 802.11 frames
 // to a ring buffer. wifi_scan_poll drains one result.
 // Returns 1 if data available, 0 if buffer empty.
-pub extern fn wifi_scan_poll(addr_out: [*]u8, receiver_out: [*]u8, rssi_out: *i8, channel_out: *u8, frame_type_out: *u8, ssid_out: [*]u8, ssid_len_out: *u8) i32;
+pub extern fn wifi_scan_poll(addr_out: [*]u8, receiver_out: [*]u8, rssi_out: *i8, channel_out: *u8, frame_type_out: *u8, ssid_out: [*]u8, ssid_len_out: *u8, rid_out: [*]u8, rid_len_out: *u8) i32;
 
 // Diagnostic: total WiFi frames captured (to verify sniffer is running)
 pub extern fn wifi_get_frame_count() u32;
@@ -191,9 +191,9 @@ pub const PIN_VEXT: u32 = 36;  // Vext control: active LOW (P-channel MOSFET)
 ///
 /// This avoids the comptime-reference-escape problem in Zig 0.16:
 /// comptime blocks can't return slices pointing to comptime memory.
-const OUI_MAX = 64;
+const OUI_MAX = 96;
 pub const KNOWN_OUIS_COUNT: usize = blk: {
-    @setEvalBranchQuota(10000);
+    @setEvalBranchQuota(20000);
     const raw = @embedFile("ouis.txt");
     var count: usize = 0;
     var lines = std.mem.splitScalar(u8, raw, '\n');
@@ -206,7 +206,7 @@ pub const KNOWN_OUIS_COUNT: usize = blk: {
 };
 
 pub const KNOWN_OUIS: [OUI_MAX][3]u8 = blk: {
-    @setEvalBranchQuota(10000);
+    @setEvalBranchQuota(20000);
     const raw = @embedFile("ouis.txt");
     var list: [OUI_MAX][3]u8 = [_][3]u8{[_]u8{0xFF} ** 3} ** OUI_MAX; // fill with sentinel
     var count: usize = 0;
@@ -429,7 +429,7 @@ export fn zig_main() callconv(.c) void {
             }
             display.alertLed(best);
             // Broadcast highest-scoring detection over LoRa mesh
-            if (best >= 40) {
+            if (best >= scanner.SCORE_MED) {
                 for (0..tracker_count) |i| {
                     if (trackers[i].score == best) {
                         mesh.meshSend(trackers[i]);
@@ -451,14 +451,23 @@ export fn zig_main() callconv(.c) void {
         var wifi_frame_type: u8 = undefined;
         var wifi_ssid: [32]u8 = undefined;
         var wifi_ssid_len: u8 = undefined;
+        var wifi_rid: [128]u8 = undefined;
+        var wifi_rid_len: u8 = undefined;
 
         poll_count = 0;
-        while (wifi_scan_poll(&wifi_addr, &wifi_receiver, &wifi_rssi, &wifi_channel, &wifi_frame_type, &wifi_ssid, &wifi_ssid_len) != 0) {
+        while (wifi_scan_poll(&wifi_addr, &wifi_receiver, &wifi_rssi, &wifi_channel, &wifi_frame_type, &wifi_ssid, &wifi_ssid_len, &wifi_rid, &wifi_rid_len) != 0) {
             poll_count += 1;
 
             // Skip unknown MACs — only track OUI matches or "Flock" SSIDs.
             // This avoids flooding the tracker table with every passing phone.
-            const result = scanner.classifyWiFi(wifi_addr, wifi_ssid[0..wifi_ssid_len]);
+            var result = scanner.classifyWiFi(wifi_addr, wifi_ssid[0..wifi_ssid_len]);
+            if (wifi_rid_len > 0) {
+                const rid_methods = scanner.parseDroneRemoteId(wifi_rid[0..wifi_rid_len]);
+                if (rid_methods != 0) {
+                    result.kind = .drone;
+                    result.methods |= rid_methods;
+                }
+            }
             if (result.kind == .unknown) {
                 // Yield periodically even when skipping
                 if (poll_count % 16 == 0) {
@@ -488,7 +497,7 @@ export fn zig_main() callconv(.c) void {
                 if (trackers[i].score > best) best = trackers[i].score;
             }
             display.alertLed(best);
-            if (best >= 40) {
+            if (best >= scanner.SCORE_MED) {
                 for (0..tracker_count) |i| {
                     if (trackers[i].score == best) {
                         mesh.meshSend(trackers[i]);

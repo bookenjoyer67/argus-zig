@@ -70,3 +70,27 @@ a0:14:3d
 90:03:b7
 # Yuneec
 c8:8e:db
+
+# Consumer surveillance cameras — WiFi OUI matching
+# Hikvision (IP cameras, NVRs)
+c4:2f:90
+18:68:cb
+4c:6f:6e
+bc:ad:28
+# Dahua (IP cameras, NVRs)
+3c:ef:8c
+90:02:a9
+4c:11:bf
+14:a7:8b
+# Reolink (consumer cameras)
+34:47:d4
+# Axis (commercial surveillance)
+00:40:8c
+ac:cc:8e
+b8:a4:4f
+# Bosch (commercial)
+00:07:5f
+20:68:9d
+# Hanwha (formerly Samsung Techwin)
+00:16:6c
+00:68:eb

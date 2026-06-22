@@ -26,6 +26,8 @@ struct wifi_scan_result {
     uint8_t frame_type;    // 0=mgmt, 2=data
     uint8_t ssid_len;
     uint8_t ssid[32];
+    uint8_t rid_len;       // Remote ID payload length (tag 221 ASTM)
+    uint8_t rid[128];      // Remote ID payload
 };
 
 static struct wifi_scan_result wifi_ring[WIFI_RING_SIZE];
@@ -56,7 +58,6 @@ static void wifi_sniffer_cb(void *buf, wifi_promiscuous_pkt_type_t type) {
     // 802.11 Frame Control field (first 2 bytes)
     uint16_t frame_ctrl = frame[0] | (frame[1] << 8);
     uint8_t fc_type = (frame_ctrl >> 2) & 0x03;   // bits 2-3
-    uint8_t fc_subtype = (frame_ctrl >> 4) & 0x0F; // bits 4-7
 
     struct wifi_scan_result r;
     memset(&r, 0, sizeof(r));
@@ -76,9 +77,9 @@ static void wifi_sniffer_cb(void *buf, wifi_promiscuous_pkt_type_t type) {
     wifi_total_frames++;
     wifi_filtered_frames++;
 
-    // Parse management frames for probe requests (type=0, subtype=4)
-    if (fc_type == 0 && fc_subtype == 4 && sig_len > 25) {
-        // Probe request body starts after 24-byte header
+    // Parse management frames (probe requests, beacons, etc.)
+    // for SSID and Remote ID information elements
+    if (fc_type == 0 && sig_len > 25) {
         const uint8_t *body = frame + 24;
         uint16_t body_len = sig_len - 24;
         uint16_t pos = 0;
@@ -90,10 +91,20 @@ static void wifi_sniffer_cb(void *buf, wifi_promiscuous_pkt_type_t type) {
             if (pos + ie_len > body_len) break;
 
             if (ie_tag == 0x00 && ie_len > 0 && ie_len <= 32) {
-                // SSID IE
                 r.ssid_len = ie_len;
                 memcpy(r.ssid, body + pos, ie_len);
-                break;
+            }
+
+            // Tag 221: Vendor Specific IE — ASTM Remote ID
+            if (ie_tag == 221 && ie_len >= 3) {
+                // Check OUI: ASTM Remote ID uses 3C:EB:FE or 3C:EB:FF
+                if (body[pos] == 0x3C && body[pos+1] == 0xEB &&
+                    (body[pos+2] == 0xFE || body[pos+2] == 0xFF)) {
+                    uint8_t rid_payload_len = ie_len - 3;
+                    if (rid_payload_len > 128) rid_payload_len = 128;
+                    r.rid_len = rid_payload_len;
+                    memcpy(r.rid, body + pos + 3, rid_payload_len);
+                }
             }
             pos += ie_len;
         }
@@ -147,7 +158,8 @@ int wifi_scan_init(void) {
 int wifi_scan_poll(uint8_t *addr_out, uint8_t *receiver_out,
                    int8_t *rssi_out, uint8_t *channel_out,
                    uint8_t *frame_type_out,
-                   uint8_t *ssid_out, uint8_t *ssid_len_out) {
+                   uint8_t *ssid_out, uint8_t *ssid_len_out,
+                   uint8_t *rid_out, uint8_t *rid_len_out) {
     if (wifi_ring_read == wifi_ring_write) return 0;
 
     struct wifi_scan_result *r = &wifi_ring[wifi_ring_read];
@@ -159,6 +171,10 @@ int wifi_scan_poll(uint8_t *addr_out, uint8_t *receiver_out,
     *ssid_len_out = r->ssid_len;
     if (r->ssid_len > 0) {
         memcpy(ssid_out, r->ssid, r->ssid_len);
+    }
+    *rid_len_out = r->rid_len;
+    if (r->rid_len > 0) {
+        memcpy(rid_out, r->rid, r->rid_len);
     }
 
     wifi_ring_read = (wifi_ring_read + 1) % WIFI_RING_SIZE;

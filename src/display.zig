@@ -24,15 +24,16 @@ pub const TrackerType = enum(u8) {
     wifi_device,
     drone,          // Drone Remote ID (ASTM F3411)
     raven,          // Raven/ShotSpotter gunshot sensor (BLE UUID set)
+    camera,         // Consumer/commercial surveillance camera (WiFi OUI + SSID)
     unknown,
     _,
 };
 
 /// Confidence level label for display.
 fn scoreLevel(score: u8) []const u8 {
-    if (score >= 85) return "CERT";
-    if (score >= 70) return "HIGH";
-    if (score >= 40) return "MED ";
+    if (score >= scanner.SCORE_CERT) return "CERT";
+    if (score >= scanner.SCORE_HIGH) return "HIGH";
+    if (score >= scanner.SCORE_MED) return "MED ";
     return "LOW ";
 }
 
@@ -307,9 +308,18 @@ pub fn kindStr(kind: TrackerType) []const u8 {
         .wifi_device => "WIF",
         .drone => "DRN",
         .raven => "RAV",
+        .camera => "CAM",
         .unknown => "???",
         else => "???",
     };
+}
+
+/// Raven firmware version string from methods flags.
+fn ravenFwStr(methods: u16) []const u8 {
+    if (methods & scanner.RAVEN_FW_1_3 != 0) return "v1.3";
+    if (methods & scanner.RAVEN_FW_1_2 != 0) return "v1.2";
+    if (methods & scanner.RAVEN_FW_1_1 != 0) return "v1.1";
+    return "";
 }
 
 /// Age in seconds since last_seen.
@@ -324,11 +334,13 @@ fn drawSummary() void {
     var ble_count: u32 = 0;
     var drone_count: u32 = 0;
     var raven_count: u32 = 0;
+    var cam_count: u32 = 0;
     for (0..main.tracker_count) |i| {
         switch (main.trackers[i].kind) {
             .flock_camera, .wifi_device => alpr_count += 1,
             .drone => drone_count += 1,
             .raven => raven_count += 1,
+            .camera => cam_count += 1,
             else => ble_count += 1,
         }
     }
@@ -344,8 +356,9 @@ fn drawSummary() void {
     oledDrawInt(48, 28, @intCast(ble_count));
     oledDrawStr(78, 28, "RAV:");
     oledDrawInt(108, 28, @intCast(raven_count));
-    oledDrawStr(0, 36, "OUI:");
-    oledDrawInt(48, 36, @intCast(main.KNOWN_OUIS_COUNT));
+    oledDrawStr(0, 36, "CAM:");
+    oledDrawInt(48, 36, @intCast(cam_count));
+    oledDrawInt(78, 36, @intCast(main.KNOWN_OUIS_COUNT));
     drawBatteryBar(0, 44, 40, 8);
     // GPS status
     var gps_buf: [24]u8 = undefined;
@@ -374,9 +387,10 @@ fn drawThreats() void {
         var buf: [32]u8 = undefined;
         const ks = kindStr(main.trackers[i].kind);
         const s = scoreLevel(main.trackers[i].score);
-        _ = std.fmt.bufPrint(&buf, "{X:0<2}:{X:0<2} {s}{d} {s}", .{
+        const fw = if (main.trackers[i].kind == .raven) ravenFwStr(main.trackers[i].methods) else "";
+        _ = std.fmt.bufPrint(&buf, "{X:0<2}:{X:0<2} {s}{s}{d} {s}", .{
             main.trackers[i].mac[0], main.trackers[i].mac[1],
-            ks, main.trackers[i].rssi, s,
+            ks, fw, main.trackers[i].rssi, s,
         }) catch continue;
         oledDrawStr(0, y, &buf);
         row += 1;
@@ -573,8 +587,8 @@ pub fn drawPage() void {
 /// 0-39: silent.  40-69: single blink.  70-84: three blinks.  85+: five blinks.
 /// Each blink is 40ms on, 40ms off. Uses delayMs which yields to FreeRTOS.
 pub fn alertLed(score: u8) void {
-    if (score < 40) return;
-    const count: u32 = if (score >= 85) 5 else if (score >= 70) 3 else 1;
+    if (score < scanner.SCORE_MED) return;
+    const count: u32 = if (score >= scanner.SCORE_CERT) 5 else if (score >= scanner.SCORE_HIGH) 3 else 1;
     var i: u32 = 0;
     while (i < count) : (i += 1) {
         ledOn();  main.delayMs(40); ledOff(); main.delayMs(40);

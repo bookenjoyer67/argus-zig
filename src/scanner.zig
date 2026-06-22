@@ -33,6 +33,13 @@ pub const METHOD_FINDMY: u16      = 1 << 5; // Apple Find My 0x4C00+type 0x12 (7
 pub const METHOD_RAVEN: u16       = 1 << 6; // Raven gunshot sensor UUID (70 pts)
 pub const METHOD_TILE: u16        = 1 << 7; // Tile 0xFEED service UUID (45 pts)
 pub const METHOD_DRONE: u16       = 1 << 8; // Drone Remote ID (BLE 0xFFFA or OUI) (60 pts)
+// Raven firmware version flags (encoded in methods for display)
+pub const RAVEN_FW_1_1: u16      = 1 << 9;  // Legacy — UUIDs 0x1809/0x1819
+pub const RAVEN_FW_1_2: u16      = 1 << 10; // UUIDs 0x31xx/0x32xx/0x3300
+pub const RAVEN_FW_1_3: u16      = 1 << 11; // UUIDs 0x34xx/0x3500
+pub const METHOD_CAM_SSID: u16  = 1 << 12; // SSID contains camera keyword (30 pts)
+pub const METHOD_SIDEWALK: u16   = 1 << 13; // Amazon Sidewalk device (50 pts)
+pub const METHOD_WIFI_DRONE: u16  = 1 << 14; // WiFi Remote ID tag 221 (85 pts)
 
 // ================================================================
 // OUI MATCHING
@@ -58,6 +65,11 @@ pub const ClassResult = struct {
     methods: u16,
 };
 
+/// Confidence score thresholds — configurable constants.
+pub const SCORE_MED: u8 = 40;
+pub const SCORE_HIGH: u8 = 70;
+pub const SCORE_CERT: u8 = 85;
+
 /// Compute confidence score from method flags, RSSI, and MAC type.
 /// Bonuses: multi-method corroboration, strong signal, static address.
 pub fn computeScore(methods: u16, rssi: i8, mac: [6]u8) u8 {
@@ -73,10 +85,16 @@ pub fn computeScore(methods: u16, rssi: i8, mac: [6]u8) u8 {
     if (methods & METHOD_RAVEN != 0)       { score += 70; count += 1; }
     if (methods & METHOD_TILE != 0)        { score += 45; count += 1; }
     if (methods & METHOD_DRONE != 0)       { score += 60; count += 1; }
+    if (methods & METHOD_SIDEWALK != 0)    { score += 50; count += 1; }
+    if (methods & METHOD_WIFI_DRONE != 0)  { score += 85; count += 1; }
 
     if (count >= 2) score += 20;     // multi-method corroboration
     if (rssi > -50) score += 10;     // strong signal
-    if ((mac[0] & 0x03) == 0) score += 10; // static MAC (not multicast, not randomized)
+    if ((mac[0] & 0x03) == 0) {      // static MAC
+        score += 10;
+    } else if ((mac[0] & 0x02) != 0) { // randomized (locally administered)
+        if (score >= 20) score -= 20 else score = 0;
+    }
 
     return if (score > 100) 100 else @intCast(score);
 }
@@ -90,6 +108,7 @@ pub fn classifyBle(adv_data: []const u8) ClassResult {
     var methods: u16 = 0;
     var kind: display.TrackerType = .unknown;
     var raven_uuids: u8 = 0; // count of Raven UUIDs found
+    var raven_fw_major: u8 = 0;
 
     var pos: usize = 0;
     while (pos + 1 < adv_data.len) {
@@ -108,6 +127,10 @@ pub fn classifyBle(adv_data: []const u8) ClassResult {
             if (company == 0x0075) {
                 kind = .samsung;
                 methods |= METHOD_MANUF;
+            }
+            // Amazon Sidewalk (Ring, Echo, Tile via Sidewalk)
+            if (company == 0x0171) {
+                methods |= METHOD_SIDEWALK;
             }
             if (company == 0x09C8) {
                 methods |= METHOD_MANUF;
@@ -129,8 +152,16 @@ pub fn classifyBle(adv_data: []const u8) ClassResult {
                 }
                 // Raven/ShotSpotter gunshot sensor UUIDs
                 if (uuid == 0x180A or uuid == 0x3100 or uuid == 0x3200 or
-                    uuid == 0x3300 or uuid == 0x3400 or uuid == 0x3500) {
+                    uuid == 0x3300 or uuid == 0x3400 or uuid == 0x3500 or
+                    uuid == 0x1809 or uuid == 0x1819) {
                     raven_uuids += 1;
+                    if (uuid == 0x3400 or uuid == 0x3500) raven_fw_major = 3;
+                    if (uuid == 0x3100 or uuid == 0x3200 or uuid == 0x3300) {
+                        if (raven_fw_major < 2) raven_fw_major = 2;
+                    }
+                    if (uuid == 0x1809 or uuid == 0x1819) {
+                        if (raven_fw_major < 1) raven_fw_major = 1;
+                    }
                 }
             }
         }
@@ -147,6 +178,13 @@ pub fn classifyBle(adv_data: []const u8) ClassResult {
     if (raven_uuids >= 1) {
         kind = .raven;
         methods |= METHOD_RAVEN;
+        // Encode firmware version in method flags for display
+        switch (raven_fw_major) {
+            3 => methods |= RAVEN_FW_1_3,
+            2 => methods |= RAVEN_FW_1_2,
+            1 => methods |= RAVEN_FW_1_1,
+            else => {},
+        }
     }
 
     return .{ .kind = kind, .methods = methods };
@@ -160,21 +198,47 @@ pub fn classifyWiFi(mac: [6]u8, ssid: []const u8) ClassResult {
 
     if (oui_match) methods |= METHOD_OUI;
 
+    // Camera SSID keywords — case-insensitive match
+    const cam_keywords = [_][]const u8{ "hikvision", "dahua", "reolink", "camera", "cam_" };
+    for (cam_keywords) |kw| {
+        if (ssid.len >= kw.len) {
+            var match = true;
+            for (kw, 0..) |kc, ki| {
+                const sc = std.ascii.toLower(ssid[ki]);
+                if (sc != std.ascii.toLower(kc)) { match = false; break; }
+            }
+            if (match) {
+                methods |= METHOD_CAM_SSID;
+                break;
+            }
+        }
+    }
+
     if (ssid.len >= 5) {
         const prefix = [5]u8{ 'F', 'L', 'O', 'C', 'K' };
         if (std.mem.eql(u8, ssid[0..5], &prefix)) {
             methods |= METHOD_SSID_PREFIX;
             // Check full Flock-XXXX format: 10 chars total (Flock-XXXX)
             if (ssid.len == 10 and ssid[5] == '-') {
-                methods |= METHOD_SSID_FLOCK;
+                // Validate XXXX is hex digits
+                const hex = ssid[6..10];
+                var valid_hex = true;
+                for (hex) |h| {
+                    if (!std.ascii.isHex(h)) { valid_hex = false; break; }
+                }
+                if (valid_hex) methods |= METHOD_SSID_FLOCK;
             }
         }
     }
 
     if (oui_match and (methods & METHOD_SSID_PREFIX != 0)) {
         kind = .flock_camera;
+    } else if (oui_match and (methods & METHOD_CAM_SSID != 0)) {
+        kind = .camera;
     } else if (oui_match) {
         kind = .wifi_device;
+    } else if (methods & METHOD_CAM_SSID != 0) {
+        kind = .camera; // camera SSID even without known OUI
     }
 
     return .{ .kind = kind, .methods = methods };
@@ -389,4 +453,32 @@ pub fn logCsv(mac: [6]u8, rssi: i8) void {
             return;
         }
     }
+}
+
+/// Parse ASTM F3411 WiFi Remote ID payload from tag 221 IE.
+/// Message format: [type:1B][flags:1B][data...]
+/// Type 0: Basic ID (drone serial)
+/// Type 1: Location (lat/lon/alt/speed)
+/// Type 2: Self-ID (free text, typically "DJI Mini 3 Pro")
+/// Returns methods flags to OR into the classification result.
+pub fn parseDroneRemoteId(rid: []const u8) u16 {
+    if (rid.len < 2) return 0;
+
+    const msg_type = rid[0] & 0x0F; // low nibble = message type
+    const payload = rid[1..];
+
+    if (msg_type == 2 and payload.len > 0) {
+        // Self-ID message — drone model name in free text
+        // Most DJI drones broadcast "DJI Mini 3 Pro" or similar
+        const txt = payload[0..@min(payload.len, @as(usize, @intCast(payload[0]))) + 1];
+        _ = txt; // model name text — for display, we just flag the detection
+        return METHOD_WIFI_DRONE;
+    }
+
+    // Type 0 (Basic ID) or Type 1 (Location) also valid Remote ID
+    if (msg_type == 0 or msg_type == 1) {
+        return METHOD_WIFI_DRONE;
+    }
+
+    return 0;
 }
