@@ -653,8 +653,8 @@ pub fn parseNmea(line: []const u8) void {
     // Check sentence type (2nd char after $)
     const talker = line[1..start-1];
 
-    // $GPGGA — fix data
-    if (talker.len >= 5 and std.mem.eql(u8, talker[talker.len-5..], "GPGGA")) {
+    // xxGGA — fix data (any talker: GP/GN/GL/GA/GB — multi-GNSS uses GN)
+    if (talker.len >= 5 and std.mem.eql(u8, talker[talker.len - 3 ..], "GGA")) {
         var fields: [15][]const u8 = undefined;
         var fi: usize = 0;
         var pos: usize = start;
@@ -664,24 +664,25 @@ pub fn parseNmea(line: []const u8) void {
             pos = end + 1;
         }
 
-        // Field 2: lat (DDMM.MMMM), 6: quality, 7: sats, 4: lon (DDDMM.MMMM)
-        if (fi >= 8 and fields[2].len > 0 and fields[4].len > 0) {
-            gps_lat = parseNmeaCoord(fields[2], if (fi >= 4) fields[3] else "N");
-            gps_lon = parseNmeaCoord(fields[4], if (fi >= 6) fields[5] else "E");
+        // fields[]: 0=time, 1=lat (DDMM.MMMM), 2=N/S, 3=lon (DDDMM.MMMM),
+        //           4=E/W, 5=fix quality, 6=satellites used
+        if (fi >= 7 and fields[1].len > 0 and fields[3].len > 0) {
+            gps_lat = parseNmeaCoord(fields[1], fields[2]);
+            gps_lon = parseNmeaCoord(fields[3], fields[4]);
 
-            // Fix quality: 0=invalid, 1=GPS, 2=DGPS
-            gps_fix = fi >= 7 and fields[6].len > 0 and fields[6][0] != '0';
+            // Fix quality: 0=invalid, 1=GPS, 2=DGPS, ...
+            gps_fix = fields[5].len > 0 and fields[5][0] != '0';
 
             // Satellite count
-            if (fi >= 8 and fields[7].len > 0) {
-                gps_sats = std.fmt.parseInt(u8, fields[7], 10) catch 0;
+            if (fields[6].len > 0) {
+                gps_sats = std.fmt.parseInt(u8, fields[6], 10) catch 0;
             }
         }
         return;
     }
 
-    // $GPRMC — recommended minimum (fallback for lat/lon)
-    if (talker.len >= 5 and std.mem.eql(u8, talker[talker.len-5..], "GPRMC")) {
+    // xxRMC — recommended minimum (fallback for lat/lon; GN on multi-GNSS)
+    if (talker.len >= 5 and std.mem.eql(u8, talker[talker.len - 3 ..], "RMC")) {
         var fields: [10][]const u8 = undefined;
         var fi: usize = 0;
         var pos: usize = start;
@@ -691,10 +692,10 @@ pub fn parseNmea(line: []const u8) void {
             pos = end + 1;
         }
 
-        // Field 2: status (A=valid), 3: lat, 4: NS, 5: lon, 6: EW
-        if (fi >= 6 and fields[2].len > 0 and fields[2][0] == 'A') {
-            const lat = parseNmeaCoord(fields[3], fields[4]);
-            const lon = parseNmeaCoord(fields[5], fields[6]);
+        // fields[]: 0=time, 1=status (A=valid), 2=lat, 3=N/S, 4=lon, 5=E/W
+        if (fi >= 6 and fields[1].len > 0 and fields[1][0] == 'A') {
+            const lat = parseNmeaCoord(fields[2], fields[3]);
+            const lon = parseNmeaCoord(fields[4], fields[5]);
             if (lat != 0) gps_lat = lat;
             if (lon != 0) gps_lon = lon;
             gps_fix = true;

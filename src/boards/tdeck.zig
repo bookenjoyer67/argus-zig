@@ -21,10 +21,11 @@ pub const PIN_I2C_SCL: u32 = 8;
 pub const PIN_BAT_ADC: u32 = 4;
 
 // Trackball: 4 direction GPIOs (active-LOW pulses) + center-click on GPIO0.
+// Mapping per Lilygo factory firmware: G01=up, G02=right, G03=down, G04=left.
 pub const PIN_TB_UP: u32 = 3; // G01
-pub const PIN_TB_DOWN: u32 = 2; // G02
-pub const PIN_TB_LEFT: u32 = 15; // G03
-pub const PIN_TB_RIGHT: u32 = 1; // G04
+pub const PIN_TB_DOWN: u32 = 15; // G03
+pub const PIN_TB_LEFT: u32 = 1; // G04
+pub const PIN_TB_RIGHT: u32 = 2; // G02
 pub const PIN_TB_CLICK: u32 = 0; // center click (also the boot strap)
 
 // T-Deck keyboard (main/keyboard.c, compiled only under BOARD_TDECK).

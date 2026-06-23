@@ -547,18 +547,18 @@ pub fn updateLed() void {
     if (init_failed) {
         const p = tick_ms % 1600;
         const on = (p < 60) or (p >= 160 and p < 220) or (p >= 320 and p < 380);
-        led_pwm_set(if (on) 255 else 0);
+        board.led.set(if (on) 255 else 0);
         return;
     }
 
     if (stealth_mode) {
         if ((tick_ms -% led_alive_last) >= 60000) {
             led_alive_last = tick_ms;
-            led_pwm_set(40);
+            board.led.set(40);
             delayMs(5);
-            led_pwm_set(0);
+            board.led.set(0);
         } else {
-            led_pwm_set(0);
+            board.led.set(0);
         }
         return;
     }
@@ -566,22 +566,22 @@ pub fn updateLed() void {
     if (scanner.stingray_alert_active) {
         // Stingray: 5 Hz strobe. Priority below Error/Stealth, above trackers.
         const p = tick_ms % 200;
-        led_pwm_set(if (p < 100) 255 else 0);
+        board.led.set(if (p < 100) 255 else 0);
         return;
     }
 
     const level = currentThreatLevel();
     if (level >= scanner.SCORE_CERT) {
         const p = tick_ms % 200;
-        led_pwm_set(if (p < 100) 255 else 0);
+        board.led.set(if (p < 100) 255 else 0);
     } else if (level >= scanner.SCORE_HIGH) {
         const p = tick_ms % 1000;
         const on = (p < 60) or (p >= 180 and p < 240);
-        led_pwm_set(if (on) 255 else 0);
+        board.led.set(if (on) 255 else 0);
     } else if (level >= scanner.SCORE_MED) {
-        led_pwm_set(triangleDuty(tick_ms % 2000, 2000, LED_PULSE_PEAK));
+        board.led.set(triangleDuty(tick_ms % 2000, 2000, LED_PULSE_PEAK));
     } else {
-        led_pwm_set(0);
+        board.led.set(0);
     }
 }
 
