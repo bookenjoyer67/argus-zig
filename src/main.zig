@@ -586,6 +586,56 @@ pub fn updateLed() void {
 }
 
 // ================================================================
+// SHARED UI ACTIONS
+// ================================================================
+//
+// Board-agnostic actions invoked by each board's input handler
+// (board.input.handle()). The Heltec button FSM and the T-Deck
+// keyboard/trackball both drive these.
+
+/// Advance to the next display page (wraps).
+pub fn nextPage() void {
+    display.current_page = (display.current_page + 1) % display.NUM_PAGES;
+}
+
+/// Go to the previous display page (wraps).
+pub fn prevPage() void {
+    display.current_page = if (display.current_page == 0)
+        display.NUM_PAGES - 1
+    else
+        display.current_page - 1;
+}
+
+/// Jump to a specific page (ignored if out of range).
+pub fn gotoPage(n: u8) void {
+    if (n < display.NUM_PAGES) display.current_page = n;
+}
+
+/// Toggle stealth mode: display off + LED dark + BLE advertising off (and back).
+pub fn toggleStealth() void {
+    stealth_mode = !stealth_mode;
+    if (stealth_mode) {
+        display.oledDisplayOff();
+        board.led.set(0);
+    } else {
+        display.oledDisplayOn();
+    }
+    _ = ble_gatt_set_enabled(if (stealth_mode) @as(i32, 0) else 1);
+}
+
+/// Dump the CSV log over serial (with a brief LED ack); optionally clear it.
+pub fn dumpCsv(clear: bool) void {
+    ledOn();
+    delayMs(50);
+    ledOff();
+    spiffs_csv_export();
+    if (clear) {
+        delayMs(200);
+        _ = spiffs_clear_csv();
+    }
+}
+
+// ================================================================
 // MAIN ENTRY POINT
 // ================================================================
 //
@@ -752,72 +802,11 @@ export fn zig_main() callconv(.c) void {
             }
         }
 
-        // --- Button handling ---
-        // Debounce 50ms, then measure hold time:
-        //   >= 1200ms  → long press (CSV export, ignored in stealth)
-        //   short      → wait ~350ms for a 2nd press:
-        //                  2nd press → double-press toggles stealth mode
-        //                  otherwise → single press cycles the page
-        // Double-press works from any page/state so stealth is always reachable.
-
-        if (buttonPressed()) {
-            delayMs(50);
-            if (buttonPressed()) {
-                var hold_ms: u32 = 50;
-                while (buttonPressed() and hold_ms < 15200) {
-                    delayMs(50);
-                    hold_ms += 50;
-                }
-
-                if (hold_ms >= 1200) {
-                    // Long press — CSV dump over serial (suppressed in stealth)
-                    if (!stealth_mode) {
-                        ledOn();  delayMs(50); ledOff();
-                        spiffs_csv_export();
-                        // Very long press (>15s) — also clear CSV after dump
-                        if (hold_ms >= 15000) {
-                            delayMs(200);
-                            _ = spiffs_clear_csv();
-                        }
-                    }
-                    while (buttonPressed()) {
-                        delayMs(10);
-                    }
-                } else {
-                    // Short press released — watch for a second press
-                    var waited: u32 = 0;
-                    var double_press = false;
-                    while (waited < 350) {
-                        if (buttonPressed()) { double_press = true; break; }
-                        delayMs(10);
-                        waited += 10;
-                    }
-
-                    if (double_press) {
-                        // Double-press — toggle stealth mode
-                        delayMs(40); // debounce second press
-                        stealth_mode = !stealth_mode;
-                        if (stealth_mode) {
-                            display.oledDisplayOff();
-                            led_pwm_set(0);
-                        } else {
-                            display.oledDisplayOn();
-                        }
-                        // Stealth silences BLE advertising too (and drops any
-                        // active phone connection); restored when stealth ends.
-                        _ = ble_gatt_set_enabled(if (stealth_mode) @as(i32, 0) else 1);
-                        while (buttonPressed()) {
-                            delayMs(10);
-                        }
-                    } else if (!stealth_mode) {
-                        // Single press — cycle to next page
-                        display.current_page = (display.current_page + 1) % display.NUM_PAGES;
-                    }
-                }
-
-                if (!stealth_mode) display.drawPage();
-            }
-        }
+        // --- Input handling ---
+        // Board-specific: the Heltec runs its PRG-button gesture FSM; the
+        // T-Deck reads the keyboard + trackball. Both drive the shared UI
+        // actions (nextPage/toggleStealth/dumpCsv).
+        board.input.handle();
 
         // --- WiFi channel hop ---
         // Mobile role only. Non-blocking: retune when the per-channel dwell

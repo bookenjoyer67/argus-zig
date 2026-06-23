@@ -61,7 +61,7 @@ pub fn batteryPct(mv: i32) u8 {
 
 // ---- Page-cycle state (shared between main loop and the board UI) ----
 pub var current_page: u8 = 0;
-pub const NUM_PAGES: u8 = 8;
+pub const NUM_PAGES = board.ui.NUM_PAGES;
 
 // ---- Panel driver (re-exported from the active board) ----
 pub const oledInit = board.display_driver.init;

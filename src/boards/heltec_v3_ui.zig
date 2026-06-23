@@ -25,7 +25,9 @@ const OLED_WIDTH = ssd1306.WIDTH;
 const kindStr = display.kindStr;
 const scoreLevel = display.scoreLevel;
 const batteryPct = display.batteryPct;
-const NUM_PAGES = display.NUM_PAGES;
+
+/// Number of pages this board's UI cycles through.
+pub const NUM_PAGES: u8 = 8;
 
 // ================================================================
 // SCREENS (boot / setup / pairing / OTA)

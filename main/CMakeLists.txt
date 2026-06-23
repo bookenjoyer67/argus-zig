@@ -18,7 +18,7 @@
 # project level in CMakeLists.txt, not here.
 
 idf_component_register(
-    SRCS "main.c" "ble.c" "wifi.c" "spiffs.c" "lora.c" "gps.c" "httpd.c" "config.c" "ota.c" "tft.c"
+    SRCS "main.c" "ble.c" "wifi.c" "spiffs.c" "lora.c" "gps.c" "httpd.c" "config.c" "ota.c" "tft.c" "keyboard.c"
     INCLUDE_DIRS "."
         "${IDF_PATH}/components/bt/host/nimble/nimble/porting/nimble/include"
         "${IDF_PATH}/components/bt/host/nimble/nimble/nimble/include"

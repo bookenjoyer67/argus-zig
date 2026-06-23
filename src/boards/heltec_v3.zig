@@ -29,6 +29,51 @@ pub const button = @import("../hal/button.zig").Button(PIN_BUTTON);
 /// Board-specific 8-page OLED UI.
 pub const ui = @import("heltec_v3_ui.zig");
 
+/// PRG-button gesture FSM (was inline in zig_main). Blocking/timing-based:
+/// debounce → hold (>=1.2s CSV dump, >=15s also clear) → else 350ms
+/// double-press window (double = stealth, single = next page). Drives the
+/// shared UI actions in main.zig. Behavior identical to the pre-refactor loop.
+pub const input = struct {
+    pub fn handle() void {
+        if (!button.pressed()) return;
+        main.delayMs(50);
+        if (!button.pressed()) return;
+
+        var hold_ms: u32 = 50;
+        while (button.pressed() and hold_ms < 15200) {
+            main.delayMs(50);
+            hold_ms += 50;
+        }
+
+        if (hold_ms >= 1200) {
+            // Long press — CSV dump over serial (suppressed in stealth).
+            if (!main.stealth_mode) main.dumpCsv(hold_ms >= 15000);
+            while (button.pressed()) main.delayMs(10);
+        } else {
+            // Short press released — watch ~350ms for a second press.
+            var waited: u32 = 0;
+            var double_press = false;
+            while (waited < 350) {
+                if (button.pressed()) {
+                    double_press = true;
+                    break;
+                }
+                main.delayMs(10);
+                waited += 10;
+            }
+            if (double_press) {
+                main.delayMs(40); // debounce second press
+                main.toggleStealth();
+                while (button.pressed()) main.delayMs(10);
+            } else if (!main.stealth_mode) {
+                main.nextPage();
+            }
+        }
+
+        if (!main.stealth_mode) display.drawPage();
+    }
+};
+
 /// Bring up the board for normal operation: LED PWM, button, Vext rail, OLED
 /// reset + I2C + init, and the boot screen. Returns true if a hardware init
 /// step failed (drives the LED error pattern). Extracted from zig_main().
