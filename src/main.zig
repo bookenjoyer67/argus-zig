@@ -175,8 +175,10 @@ pub extern fn spiffs_clear_csv() i32;
 // LoRa SX1262 — mesh networking on 915 MHz
 // lora_send: TX a packet (max 255 bytes), blocks until done.
 // lora_poll_receive: check for received packet, returns length (0 if none).
+// lora_recover_rx: force standby → clear IRQs → set RX (silence recovery).
 pub extern fn lora_send(data: [*]const u8, len: u8) i32;
 pub extern fn lora_poll_receive(buf: [*]u8) i32;
+pub extern fn lora_recover_rx() i32;
 
 // GPS NEO-6M — UART1 on GPIO 4/5 at 9600 baud
 pub extern fn gps_read(buf: [*]u8, max_len: i32) i32;
@@ -688,6 +690,13 @@ export fn zig_main() callconv(.c) void {
     var last_draw_ms: u32 = 0; // throttles live page refresh
     var prev_alert_tier: u8 = 0; // last audio-alert threat tier (rising-edge beep)
 
+    // RX recovery watchdog: counts consecutive main-loop iterations without
+    // any LoRa IRQ event (neither RX_DONE nor RX_TIMEOUT). After ~60s of
+    // silence (240 iterations at ~250ms), force standby → clear IRQs → set
+    // continuous RX. A radio in continuous RX should always produce one of
+    // the two IRQs; silence means it's stuck in standby.
+    var lora_silent_iterations: u32 = 0;
+
     while (true) {
         had_new = false;
 
@@ -917,10 +926,20 @@ export fn zig_main() callconv(.c) void {
 
         // --- LoRa mesh polling ---
         // Check for received mesh packets, process into tracker table.
+        // Recovery watchdog: if the radio produces zero IRQ events for ~60s
+        // (240 main-loop iterations), it's likely stuck in standby. Force a
+        // standby → clear IRQs → set RX recovery sequence.
         var lora_buf: [255]u8 = undefined;
         const lora_len = lora_poll_receive(&lora_buf);
         if (lora_len > 0) {
             mesh.meshRecv(lora_buf[0..@intCast(lora_len)]);
+            lora_silent_iterations = 0;
+        } else {
+            lora_silent_iterations += 1;
+            if (lora_silent_iterations > 240) {
+                _ = lora_recover_rx();
+                lora_silent_iterations = 0;
+            }
         }
 
         // --- GPS NMEA accumulator ---

@@ -111,7 +111,11 @@ int tft_init(void) {
 
     s_fb = heap_caps_malloc(TFT_W * TFT_H * 2, MALLOC_CAP_SPIRAM);
     if (!s_fb) {
-        ESP_LOGE(TAG, "framebuffer PSRAM alloc failed (is SPIRAM enabled?)");
+        ESP_LOGW(TAG, "PSRAM alloc failed, trying internal RAM");
+        s_fb = heap_caps_malloc(TFT_W * TFT_H * 2, MALLOC_CAP_8BIT | MALLOC_CAP_DMA);
+    }
+    if (!s_fb) {
+        ESP_LOGE(TAG, "framebuffer alloc failed (no PSRAM + internal RAM too small)");
         return -4;
     }
     memset(s_fb, 0, TFT_W * TFT_H * 2);

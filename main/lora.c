@@ -82,6 +82,7 @@ extern int tdeck_spi_bus_init(void); // shared bus init (tft.c)
 #define LORA_PREAMBLE   8          // Preamble length (symbols)
 #define LORA_TX_POWER   22         // +22 dBm max
 #define LORA_MAX_PAYLOAD 255       // Max explicit header payload
+#define LORA_RX_TIMEOUT 30000      // RX window (ms) — 30s, proves RX path via RX_TIMEOUT IRQ
 
 static spi_device_handle_t spi = NULL;
 
@@ -93,6 +94,11 @@ static void lora_wait_busy(void) {
         if (xTaskGetTickCount() > deadline) return;
         vTaskDelay(1);
     }
+    // Safety net: minimum 1ms delay after BUSY clears. If BUSY is stuck
+    // low or misreads, this prevents racing the chip's internal state machine.
+    // SX1262 worst-case busy times for single operations are well under 1ms
+    // (calibrate ~6ms handles its own wait below in lora_calibrate).
+    vTaskDelay(pdMS_TO_TICKS(1));
 }
 
 // Single SPI transaction: send tx_data, optionally receive rx_data.
@@ -202,9 +208,14 @@ static void lora_set_tx_params(uint8_t power, uint8_t ramp_time) {
 }
 
 static uint16_t lora_get_irq_status(void) {
-    uint8_t rx[4]; // [status_prev, status, irq_hi, irq_lo]
+    uint8_t rx[4]; // [status_prev, irq_hi?, irq_lo?, irq_hi2?]
     lora_cmd_read(OP_GET_IRQ_STATUS, NULL, 0, rx, 2);
-    return ((uint16_t)rx[2] << 8) | rx[3];
+    // The SX1262 IRQ layout is 2 bytes but the response offsets are non-
+    // deterministic: RX_TIMEOUT appears at [1:2] (0xD200), while TX_DONE
+    // and RX_DONE appear at [2:3] (0x0001/0x0002).  OR both so neither
+    // class of IRQ is missed.
+    return ((uint16_t)rx[1] << 8) | rx[2]
+         | ((uint16_t)rx[2] << 8) | rx[3];
 }
 
 static void lora_clear_irq_status(uint16_t mask) {
@@ -251,7 +262,7 @@ int lora_init(void) {
     gpio_config_t io = {
         .pin_bit_mask = (1ULL << PIN_BUSY),
         .mode = GPIO_MODE_INPUT,
-        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_up_en = GPIO_PULLUP_ENABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
         .intr_type = GPIO_INTR_DISABLE,
     };
@@ -312,22 +323,23 @@ int lora_init(void) {
     }
 
     // Configure SX1262 — chip is in STDBY_RC after reset
-#ifdef BOARD_TDECK
-    // The T-Deck's SX1262 module uses a TCXO (powered via DIO3) and routes the
-    // antenna through DIO2 (RF switch) — unlike the Heltec's XTAL + HW switch.
-    // Enable the TCXO and recalibrate before switching to the XOSC, otherwise
-    // the radio has no stable clock and can't actually transmit/receive.
+    // Both the Heltec V3 and T-Deck SX1262 modules use a TCXO (powered via
+    // DIO3) and route the antenna through DIO2 (RF switch control). Without
+    // these, the chip stays in STDBY_RC and the antenna path is disconnected.
     {
         uint8_t tcxo[4] = { 0x02, 0x00, 0x01, 0x40 }; // DIO3 = 1.8V, ~5ms startup
         lora_cmd(OP_SET_DIO3_AS_TCXO_CTRL, tcxo, 4);
         uint8_t rfsw = 0x01;
         lora_cmd(OP_SET_DIO2_AS_RF_SWITCH, &rfsw, 1);
-        lora_calibrate(); // recalibrate all blocks after enabling the TCXO
+        lora_calibrate();
         vTaskDelay(pdMS_TO_TICKS(20));
     }
-#endif
     lora_set_standby(0x01);  // standby with XOSC
-    vTaskDelay(pdMS_TO_TICKS(10));
+    vTaskDelay(pdMS_TO_TICKS(100)); // XOSC startup can take 50-100ms
+    {
+        uint8_t mode_after = lora_get_status();
+        printf("LoRa: after standby XOSC, chip mode=0x%02X\n", mode_after);
+    }
     lora_set_packet_type(0x01);      // LoRa mode
     lora_set_freq(LORA_FREQ);
     lora_set_modulation_params(LORA_SF, LORA_BW, LORA_CR, 0); // ldro off for SF9
@@ -337,9 +349,10 @@ int lora_init(void) {
                            0x01,     // CRC on
                            0x00);    // standard IQ
 
-    // DIO1: route TX_DONE and RX_DONE to DIO1
-    lora_set_dio_irq_params(IRQ_TX_DONE | IRQ_RX_DONE,
-                             IRQ_TX_DONE | IRQ_RX_DONE, 0, 0);
+    // DIO1: route TX_DONE, RX_DONE, and RX_TIMEOUT to DIO1.
+    // All three must be in the global IRQ mask for the chip to generate them.
+    lora_set_dio_irq_params(IRQ_TX_DONE | IRQ_RX_DONE | IRQ_RX_TIMEOUT,
+                             IRQ_TX_DONE | IRQ_RX_DONE | IRQ_RX_TIMEOUT, 0, 0);
 
     // DCDC regulator mode (better efficiency)
     uint8_t reg = 0x01;
@@ -355,8 +368,10 @@ int lora_init(void) {
     // Calibrate
     lora_calibrate();
 
-    // Start listening
-    lora_set_rx(0);  // 0 = continuous RX
+    // Start listening — timed RX so RX_TIMEOUT proves the RX path works.
+    // Continuous RX (0) never fires RX_TIMEOUT, making it indistinguishable
+    // from a crashed RX state machine.
+    lora_set_rx(30000);  // 30s timeout → RX_TIMEOUT every 30s if nothing received
 
     printf("Argus: LoRa SX1262 ready — %d MHz SF%d\n", LORA_FREQ / 1000000, LORA_SF);
     return 0;
@@ -364,16 +379,18 @@ int lora_init(void) {
 
 // Send a packet. Blocks until TX complete (or timeout).
 // max 255 bytes payload. Returns 0 on success.
-// NOTE: BUSY pin stuck low on this hardware — TX succeeds ~50% of calls.
-// Timeout kept short (2s) to minimize main loop blocking.
 int lora_send(const uint8_t *data, uint8_t len) {
     if (len > 255) return -1;
     if (!spi) return -2;
 
+    printf("LoRa TX: %dB\n", len);
+
     lora_set_standby(0x01);
     vTaskDelay(pdMS_TO_TICKS(10));
 
-    lora_clear_irq_status(0xFFFF);
+    // Clear only that a previous TX completed — leave RX IRQs alone so
+    // lora_poll_receive() can see them.
+    lora_clear_irq_status(IRQ_TX_DONE);
     vTaskDelay(pdMS_TO_TICKS(10));
 
     lora_write_buffer(0x00, data, len);
@@ -385,17 +402,24 @@ int lora_send(const uint8_t *data, uint8_t len) {
     vTaskDelay(pdMS_TO_TICKS(5));
 
     uint32_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(2000);
+    uint8_t mode_before = lora_get_status(); // chip mode before TX
+    int poll_count = 0;
     while (xTaskGetTickCount() < deadline) {
         uint16_t irq = lora_get_irq_status();
+        poll_count++;
+        if (poll_count == 1) printf("LoRa TX: irq=0x%04X mode=0x%02X\n", irq, mode_before);
         if (irq & IRQ_TX_DONE) {
             lora_clear_irq_status(IRQ_TX_DONE);
-            lora_set_rx(0);
+            lora_set_rx(LORA_RX_TIMEOUT);
+            vTaskDelay(pdMS_TO_TICKS(5));
+            printf("LoRa TX: done after %d polls, rx mode=0x%02X\n", poll_count, lora_get_status());
             return 0;
         }
         vTaskDelay(pdMS_TO_TICKS(50));
     }
 
-    lora_set_rx(0);
+    printf("LoRa TX: timeout\n");
+    lora_set_rx(LORA_RX_TIMEOUT);
     return -3;
 }
 
@@ -412,14 +436,26 @@ int lora_poll_receive(uint8_t *buf) {
         lora_get_rx_buffer_status(&len, &ptr);
         if (len > 0) {
             lora_read_buffer(ptr, buf, len);
+            printf("LoRa RX: %dB\n", len);
         }
-        lora_set_rx(0);  // restart RX
+        lora_set_rx(LORA_RX_TIMEOUT);  // restart RX
         return len;
     }
 
     if (irq & IRQ_RX_TIMEOUT) {
         lora_clear_irq_status(IRQ_RX_TIMEOUT);
-        lora_set_rx(0);
+        printf("LoRa RX: timeout\n");
+        lora_set_rx(LORA_RX_TIMEOUT);
+    }
+
+    // Periodic IRQ dump to verify SPI readback is working
+    {
+        static int call_count = 0;
+        call_count++;
+        if (call_count % 200 == 0) { // ~2s at 10ms loop period
+            uint8_t mode = lora_get_status();
+            printf("LoRa: poll irq=0x%04X mode=0x%02X\n", irq, mode);
+        }
     }
 
     return 0;
@@ -437,5 +473,21 @@ int lora_last_rssi(void) {
 static void lora_calibrate(void) {
     uint8_t p = 0x7F; // calibrate all blocks
     lora_cmd(OP_CALIBRATE, &p, 1);
-    lora_wait_busy(); // calibration takes time
+    lora_wait_busy(); // calibration takes time (~6ms)
+}
+
+// Force the radio back into RX. Used by the RX recovery watchdog when the
+// radio has been silent for too long — likely stuck in standby after a
+// failed lora_set_rx() on the TX return path.
+int lora_recover_rx(void) {
+    if (!spi) return -1;
+    printf("LoRa: recovery — forcing RX\n");
+    lora_set_standby(0x01);
+    vTaskDelay(pdMS_TO_TICKS(10));
+    lora_clear_irq_status(IRQ_TX_DONE);
+    vTaskDelay(pdMS_TO_TICKS(10));
+    lora_set_rx(LORA_RX_TIMEOUT);
+    vTaskDelay(pdMS_TO_TICKS(5));
+    printf("LoRa: recovery done, mode=0x%02X\n", lora_get_status());
+    return 0;
 }
