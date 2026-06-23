@@ -337,7 +337,11 @@ void app_main(void) {
     wifi_scan_init();
 
     // --- Initialize LoRa radio for mesh networking ---
+    // On the T-Deck, LoRa shares the SPI2 bus and sits behind the GPIO10 power
+    // gate, so it is initialized from board.init() (after tft_init) instead.
+#ifndef BOARD_TDECK
     lora_init();
+#endif
 
     // --- Initialize GPS UART (NEO-6M on GPIO 4/5) ---
     gps_init();

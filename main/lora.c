@@ -23,6 +23,17 @@
 #include "hal/spi_types.h"
 
 // --- Pin definitions ---
+#ifdef BOARD_TDECK
+// T-Deck: SX1262 on the shared SPI2 bus (SCK40/MOSI41/MISO38), CS=9.
+#define PIN_NSS   9
+#define PIN_SCK  40
+#define PIN_MOSI 41
+#define PIN_MISO 38
+#define PIN_RST  17
+#define PIN_BUSY 13
+#define PIN_DIO1 45
+extern int tdeck_spi_bus_init(void); // shared bus init (tft.c)
+#else
 #define PIN_NSS   8
 #define PIN_SCK   9
 #define PIN_MOSI 10
@@ -30,6 +41,7 @@
 #define PIN_RST  12
 #define PIN_BUSY 13
 #define PIN_DIO1 14
+#endif
 
 // --- SX1262 opcodes ---
 #define OP_SET_SLEEP              0x84
@@ -233,13 +245,6 @@ static void lora_write_buffer(uint8_t offset, const uint8_t *data, uint8_t len) 
 static void lora_calibrate(void);
 
 int lora_init(void) {
-#ifdef BOARD_TDECK
-    // T-Deck shares SPI2_HOST between TFT, SD, and LoRa, and uses different
-    // SX1262 pins. Until that shared-bus wiring lands (Phase 4), skip LoRa
-    // init so SPI2 stays free for the ST7789 display. `spi` stays NULL, so
-    // lora_send()/lora_poll_receive() are already safe no-ops.
-    return -1;
-#else
     // Configure BUSY as input
     gpio_config_t io = {
         .pin_bit_mask = (1ULL << PIN_BUSY),
@@ -269,6 +274,14 @@ int lora_init(void) {
     gpio_set_direction(PIN_NSS, GPIO_MODE_OUTPUT);
     gpio_set_level(PIN_NSS, 1);
 
+    esp_err_t ret;
+#ifdef BOARD_TDECK
+    // Shared SPI2 bus (TFT/SD/LoRa) — already brought up by tft_init().
+    if (tdeck_spi_bus_init() != 0) {
+        printf("Argus: LoRa shared SPI bus init failed\n");
+        return -1;
+    }
+#else
     spi_bus_config_t bus_cfg = {
         .mosi_io_num = PIN_MOSI,
         .miso_io_num = PIN_MISO,
@@ -277,11 +290,12 @@ int lora_init(void) {
         .quadhd_io_num = -1,
         .max_transfer_sz = 256,
     };
-    esp_err_t ret = spi_bus_initialize(SPI2_HOST, &bus_cfg, SPI_DMA_CH_AUTO);
+    ret = spi_bus_initialize(SPI2_HOST, &bus_cfg, SPI_DMA_CH_AUTO);
     if (ret != ESP_OK) {
         printf("Argus: LoRa SPI bus init failed: %d\n", ret);
         return -1;
     }
+#endif
 
     spi_device_interface_config_t dev_cfg = {
         .mode = 0,                          // SPI mode 0
@@ -330,7 +344,6 @@ int lora_init(void) {
 
     printf("Argus: LoRa SX1262 ready — %d MHz SF%d\n", LORA_FREQ / 1000000, LORA_SF);
     return 0;
-#endif
 }
 
 // Send a packet. Blocks until TX complete (or timeout).

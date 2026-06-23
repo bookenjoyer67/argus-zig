@@ -40,6 +40,27 @@
 static const char *TAG = "tft";
 static esp_lcd_panel_handle_t s_panel = NULL;
 static uint16_t *s_fb = NULL;
+static bool s_bus_ready = false;
+
+// Initialize the shared SPI2 bus once (TFT + microSD + LoRa all ride it).
+// Idempotent and order-independent: whichever peripheral inits first wins.
+int tdeck_spi_bus_init(void) {
+    if (s_bus_ready) return 0;
+    spi_bus_config_t buscfg = {
+        .sclk_io_num = PIN_SCK,
+        .mosi_io_num = PIN_MOSI,
+        .miso_io_num = PIN_MISO,
+        .quadwp_io_num = -1,
+        .quadhd_io_num = -1,
+        .max_transfer_sz = TFT_W * TFT_STRIP * 2 + 8,
+    };
+    if (spi_bus_initialize(TFT_HOST, &buscfg, SPI_DMA_CH_AUTO) != ESP_OK) {
+        ESP_LOGE(TAG, "spi_bus_initialize failed");
+        return -1;
+    }
+    s_bus_ready = true;
+    return 0;
+}
 
 int tft_init(void) {
     // Peripheral power gate — without this the SPI devices stay dark.
@@ -51,16 +72,7 @@ int tft_init(void) {
     gpio_set_level(PIN_POWERON, 1);
     gpio_set_level(PIN_TFT_BL, 1);
 
-    spi_bus_config_t buscfg = {
-        .sclk_io_num = PIN_SCK,
-        .mosi_io_num = PIN_MOSI,
-        .miso_io_num = PIN_MISO,
-        .quadwp_io_num = -1,
-        .quadhd_io_num = -1,
-        .max_transfer_sz = TFT_W * TFT_STRIP * 2 + 8,
-    };
-    if (spi_bus_initialize(TFT_HOST, &buscfg, SPI_DMA_CH_AUTO) != ESP_OK) {
-        ESP_LOGE(TAG, "spi_bus_initialize failed");
+    if (tdeck_spi_bus_init() != 0) {
         return -1;
     }
 

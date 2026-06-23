@@ -37,6 +37,12 @@ extern fn kbd_read() i32;
 extern fn spk_init() i32;
 extern fn spk_tone(freq_hz: i32, ms: i32, vol: i32) void;
 
+// T-Deck microSD (main/sdcard.c) on the shared SPI2 bus.
+extern fn sd_init() i32;
+
+// LoRa SX1262 (main/lora.c) on the shared SPI2 bus (T-Deck pins).
+extern fn lora_init() i32;
+
 // ---- Common board interface ----
 /// ST7789 framebuffer backend (the gfx backend).
 pub const display_driver = st7789;
@@ -68,6 +74,8 @@ pub fn init() bool {
 
     _ = kbd_init();
     _ = spk_init();
+    _ = sd_init(); // shared SPI2 bus is up now (tft_init); non-fatal if no card
+    _ = lora_init(); // SX1262 on the shared bus (power gate + bus are up)
     // Trackball: direction GPIOs + center-click as input with pullup
     // (each pulses active-LOW as the ball rolls / is clicked).
     _ = main.gpio_pin_init(PIN_TB_UP, main.GPIO_INPUT, main.GPIO_PULL_UP);

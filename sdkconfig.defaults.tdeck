@@ -15,8 +15,14 @@ CONFIG_SPIRAM=y
 CONFIG_SPIRAM_MODE_OCT=y
 CONFIG_SPIRAM_SPEED_80M=y
 CONFIG_SPIRAM_USE_MALLOC=y
-CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+# WiFi/LWIP buffers stay in internal RAM (not PSRAM): with LoRa+TFT doing
+# concurrent SPI-DMA, WiFi buffers in PSRAM destabilize coexistence.
+# CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP is not set
 
 # Route the console to USB-Serial-JTAG (T-Deck has no USB-UART bridge; UART0
 # isn't on the USB port). Lets boot logs come out over /dev/ttyACM0.
 CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+
+# T-Deck board.init() runs a deep chain on the main task (esp_lcd + FATFS mount
+# + SX1262 init); the 3584-byte default overflows and corrupts WiFi coex.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384
