@@ -16,6 +16,12 @@
 #define GPS_BUF_SZ  256
 
 int gps_init(void) {
+#ifdef BOARD_TDECK
+    // T-Deck has no NEO-6M, and GPIO4/5 are the battery ADC / I2S pins here.
+    // Skip GPS UART so GPIO4 stays free for battery_read_mv(). gps_read()
+    // returns 0 on the uninstalled UART, so the Zig loop is unaffected.
+    return -1;
+#else
     uart_config_t cfg = {
         .baud_rate = GPS_BAUD,
         .data_bits = UART_DATA_8_BITS,
@@ -47,6 +53,7 @@ int gps_init(void) {
     printf("Argus: GPS UART ready — %d baud on GPIO %d/%d\n",
            GPS_BAUD, GPS_RX_PIN, GPS_TX_PIN);
     return 0;
+#endif
 }
 
 // Read available bytes from GPS UART. Non-blocking.

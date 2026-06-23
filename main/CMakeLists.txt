@@ -18,7 +18,7 @@
 # project level in CMakeLists.txt, not here.
 
 idf_component_register(
-    SRCS "main.c" "ble.c" "wifi.c" "spiffs.c" "lora.c" "gps.c" "httpd.c" "config.c" "ota.c"
+    SRCS "main.c" "ble.c" "wifi.c" "spiffs.c" "lora.c" "gps.c" "httpd.c" "config.c" "ota.c" "tft.c"
     INCLUDE_DIRS "."
         "${IDF_PATH}/components/bt/host/nimble/nimble/porting/nimble/include"
         "${IDF_PATH}/components/bt/host/nimble/nimble/nimble/include"
@@ -39,6 +39,15 @@ idf_component_register(
         "${IDF_PATH}/components/hal/include"
         "${IDF_PATH}/components/spiffs/include"
         "${IDF_PATH}/components/esp_driver_uart/include"
-    REQUIRES nvs_flash bt freertos esp_wifi esp_netif esp_event driver spiffs vfs esp_http_server app_update esp_https_ota esp-tls esp_http_client
+    REQUIRES nvs_flash bt freertos esp_wifi esp_netif esp_event driver spiffs vfs esp_http_server app_update esp_https_ota esp-tls esp_http_client esp_lcd
     EMBED_TXTFILES "../web/setup.html" "../web/dashboard.html"
+    WHOLE_ARCHIVE
 )
+
+# Board selection (passed via idf.py -DBOARD=tdeck). Defining it on the
+# component target is what actually reaches the C sources (e.g. tft.c) —
+# a project-level add_compile_definitions does NOT propagate to IDF components.
+if(DEFINED BOARD AND BOARD STREQUAL "tdeck")
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE BOARD_TDECK)
+    message(STATUS "Argus: main component built for T-Deck (BOARD_TDECK)")
+endif()

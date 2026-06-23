@@ -1,0 +1,22 @@
+# ================================================================
+# T-Deck (Lilygo) sdkconfig overrides — layered on sdkconfig.defaults
+# Use with: idf.py -DBOARD=tdeck \
+#   -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.tdeck" build
+# ================================================================
+
+# ESP32-S3-WROOM-1 N16R8: 16MB flash
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
+
+# Octal PSRAM (8MB) — required for the 320x240x16 ST7789 framebuffer (~150KB).
+# If the panel never lights up and boot logs a PSRAM error, the module may be
+# quad PSRAM instead: swap MODE_OCT for MODE_QUAD.
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_80M=y
+CONFIG_SPIRAM_USE_MALLOC=y
+CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+
+# Route the console to USB-Serial-JTAG (T-Deck has no USB-UART bridge; UART0
+# isn't on the USB port). Lets boot logs come out over /dev/ttyACM0.
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y

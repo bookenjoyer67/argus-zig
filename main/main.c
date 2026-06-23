@@ -208,11 +208,18 @@ int gpio_read(int pin) {
 
 int battery_read_mv(void) {
     adc1_config_width(ADC_WIDTH_BIT_12);
+#ifdef BOARD_TDECK
+    // T-Deck: VBAT on GPIO4 (ADC1_CH3), 2:1 divider (100k/100k).
+    adc1_config_channel_atten(ADC1_CHANNEL_3, ADC_ATTEN_DB_11);
+    int raw = adc1_get_raw(ADC1_CHANNEL_3);
+    return raw * 3300 / 4095 * 2;
+#else
+    // Heltec V3: VBAT on GPIO1 (ADC1_CH1), (390k+100k)/100k = 4.9 divider.
     adc1_config_channel_atten(ADC1_CHANNEL_1, ADC_ATTEN_DB_11);
     int raw = adc1_get_raw(ADC1_CHANNEL_1);
-    // Divider ratio: (390k + 100k) / 100k = 4.9
     // mV = raw * 3300 / 4095 * 490 / 100
     return raw * 3300 / 4095 * 490 / 100;
+#endif
 }
 
 // ================================================================

@@ -3,6 +3,7 @@ build/
 zig-out/
 zig-cache/
 .zig-cache/
+src/board.zig
 
 # ESP-IDF generated
 sdkconfig

@@ -2,7 +2,7 @@
 // SX1262 LoRa Driver — minimal custom driver for SPI
 // ================================================================
 //
-// Heltec V3 pinout: NSS=8, SCK=9, MOSI=10, MISO=11, BUSY=12, RST=13, DIO1=14
+// Heltec V3 pinout: NSS=8, SCK=9, MOSI=10, MISO=11, RST=12, BUSY=13, DIO1=14
 // Uses ESP-IDF SPI master driver on SPI2_HOST (FSPI).
 // LoRa: 915 MHz (US), SF9, BW 125 kHz, CR 4/5, explicit header, CRC on.
 //
@@ -233,6 +233,13 @@ static void lora_write_buffer(uint8_t offset, const uint8_t *data, uint8_t len) 
 static void lora_calibrate(void);
 
 int lora_init(void) {
+#ifdef BOARD_TDECK
+    // T-Deck shares SPI2_HOST between TFT, SD, and LoRa, and uses different
+    // SX1262 pins. Until that shared-bus wiring lands (Phase 4), skip LoRa
+    // init so SPI2 stays free for the ST7789 display. `spi` stays NULL, so
+    // lora_send()/lora_poll_receive() are already safe no-ops.
+    return -1;
+#else
     // Configure BUSY as input
     gpio_config_t io = {
         .pin_bit_mask = (1ULL << PIN_BUSY),
@@ -323,6 +330,7 @@ int lora_init(void) {
 
     printf("Argus: LoRa SX1262 ready — %d MHz SF%d\n", LORA_FREQ / 1000000, LORA_SF);
     return 0;
+#endif
 }
 
 // Send a packet. Blocks until TX complete (or timeout).

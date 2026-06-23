@@ -47,6 +47,9 @@
 //!   GPIO 43,44 (UART0 to CP2102)
 
 const std = @import("std");
+/// Selected at build time by build-zig.sh (BOARD env var). Maps to
+/// src/boards/<BOARD>.zig via a generated src/board.zig forwarding shim.
+pub const board = @import("board.zig");
 pub const display = @import("display.zig");
 pub const scanner = @import("scanner.zig");
 pub const mesh = @import("mesh.zig");
@@ -198,15 +201,8 @@ pub extern fn gps_read(buf: [*]u8, max_len: i32) i32;
 //   Vext: switched 3.3V for external sensors, controlled by GPIO 36 (active LOW)
 //   Battery ADC on GPIO 1 (390k/100k divider)
 
-pub const PIN_LED: u32    = 35;  // Onboard white LED (J2 pin 10), active HIGH
-pub const PIN_BUTTON: u32 = 0;   // PRG button (J2 pin 8), active LOW, needs pullup
-
-// OLED I2C bus — these are PCB traces, not exposed on headers
-// The SSD1306 is addressed at 0x3C (SA0 pin tied to GND on this board)
-const PIN_OLED_SDA: u32 = 17;
-const PIN_OLED_SCL: u32 = 18;
-pub const PIN_OLED_RST: u32 = 21;
-pub const PIN_VEXT: u32 = 36;  // Vext control: active LOW (P-channel MOSFET)
+// Pin definitions live in the active board module (src/boards/<board>.zig),
+// referenced as board.PIN_*. The pin map above documents the Heltec V3 layout.
 
 // ================================================================
 // COMPILE-TIME OUI DATABASE
@@ -420,18 +416,18 @@ pub var tick_ms: u32 = 0;
 // These are deliberately small — the compiler inlines them.
 
 pub fn ledOn() void {
-    led_pwm_set(255);
+    board.led.on();
 }
 
 pub fn ledOff() void {
-    led_pwm_set(0);
+    board.led.off();
 }
 
 /// Read the PRG button. Returns true when pressed.
 /// Active LOW — GPIO reads 0 when button is held down.
 /// Internal pullup is enabled in zig_main().
 pub fn buttonPressed() bool {
-    return gpio_read(PIN_BUTTON) == 0;
+    return board.button.pressed();
 }
 
 /// Block for at least `ms` milliseconds using FreeRTOS vTaskDelay.
@@ -609,58 +605,11 @@ pub fn updateLed() void {
 ///   Total:       ~6KB RAM of 512KB available
 
 export fn zig_main() callconv(.c) void {
-    // --- GPIO initialization ---
-    // Configure all pins before the main loop. gpio_pin_init() wraps
-    // ESP-IDF gpio_config() — a real ABI symbol that configures direction,
-    // pull resistors, and interrupt state in a single call.
-
-    led_pwm_init();
-    _ = gpio_pin_init(PIN_BUTTON, GPIO_INPUT, GPIO_PULL_UP);
-
-    // --- Boot sequence ---
-    // The LED is the earliest sign of life (OLED I2C isn't ready yet).
-    //   0ms:   solid on (power good)
-    //   ~200ms: off, then a quick double-blink (firmware booted)
-    ledOn();  delayMs(200);
-    ledOff(); delayMs(80);
-    ledOn();  delayMs(40); ledOff(); delayMs(80);
-    ledOn();  delayMs(40); ledOff(); delayMs(80);
-
-    // --- Display init ---
-    // Vext (GPIO 36) controls the switched 3.3V rail via P-channel MOSFET.
-    // Active LOW: pull LOW to enable Vext, HIGH to disable.
-    // Enable it before resetting/initializing the display.
-
-    _ = gpio_pin_init(PIN_VEXT, GPIO_OUTPUT, GPIO_PULL_NONE);
-    _ = gpio_write(PIN_VEXT, 0);   // enable Vext (active LOW)
-    delayMs(50);                    // let power rail stabilize
-
-    // Reset the SSD1306 via GPIO 21, then initialize I2C and send
-    // the init sequence. If I2C init fails, set init_failed so the
-    // runtime LED state machine shows the error pattern, and continue
-    // headless — the device still scans without the OLED.
-
-    _ = gpio_pin_init(PIN_OLED_RST, GPIO_OUTPUT, GPIO_PULL_NONE);
-    _ = gpio_write(PIN_OLED_RST, 0);   // hold in reset
-    delayMs(100);
-    _ = gpio_write(PIN_OLED_RST, 1);   // release reset
-    delayMs(100);
-
-    if (oled_i2c_init() != 0) {
-        // OLED not responding — flag the fault and blink an error code.
-        // updateLed() then repeats the error pattern for the whole session.
-        init_failed = true;
-        ledOn();  delayMs(50); ledOff(); delayMs(50);
-        ledOn();  delayMs(50); ledOff(); delayMs(50);
-        ledOn();  delayMs(50); ledOff();
-    } else {
-        display.oledInit();
-        display.drawBoot("");          // big "ARGUS" logo
-        delayMs(400);
-        display.drawBoot("Scanning...");
-        delayMs(400);
-        display.drawPage();            // flip to summary
-    }
+    // --- Board bring-up ---
+    // Hardware + display initialization is board-specific (see board.init()):
+    // Heltec drives the LED/Vext/OLED-reset sequence; other boards do their own.
+    // Returns true if a hardware init step failed (drives the LED error pattern).
+    init_failed = board.init();
 
     // Restore session counter from SPIFFS
     scanner.restoreSession();
@@ -997,26 +946,12 @@ export fn zig_main() callconv(.c) void {
 /// This brings up the OLED and shows connection instructions, looping
 /// until POST /api/setup saves the config and reboots the device.
 export fn zig_main_setup() callconv(.c) void {
-    led_pwm_init();
-
-    // Bring up the OLED (same sequence as the normal boot path).
-    _ = gpio_pin_init(PIN_VEXT, GPIO_OUTPUT, GPIO_PULL_NONE);
-    _ = gpio_write(PIN_VEXT, 0); // enable Vext (active LOW)
-    delayMs(50);
-    _ = gpio_pin_init(PIN_OLED_RST, GPIO_OUTPUT, GPIO_PULL_NONE);
-    _ = gpio_write(PIN_OLED_RST, 0);
-    delayMs(100);
-    _ = gpio_write(PIN_OLED_RST, 1);
-    delayMs(100);
-
-    if (oled_i2c_init() == 0) {
-        display.oledInit();
-        display.drawSetup();
-    }
+    // Board-specific OLED/display bring-up for setup mode.
+    board.initSetup();
 
     // Loop forever — a gentle pulse signals "waiting for setup".
     while (true) {
-        led_pwm_set(triangleDuty(tick_ms % 2000, 2000, LED_PULSE_PEAK));
+        board.led.set(triangleDuty(tick_ms % 2000, 2000, LED_PULSE_PEAK));
         delayMs(50);
     }
 }

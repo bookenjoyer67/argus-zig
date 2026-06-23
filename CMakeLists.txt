@@ -15,6 +15,14 @@
 cmake_minimum_required(VERSION 3.16)
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 
+# Board selection for the C side. Pass with: idf.py -DBOARD=tdeck build
+# Defines BOARD_TDECK so board-specific C (e.g. main/tft.c) compiles in.
+# (The Zig side selects the board separately via BOARD=... ./build-zig.sh.)
+if(DEFINED BOARD AND BOARD STREQUAL "tdeck")
+    add_compile_definitions(BOARD_TDECK)
+    message(STATUS "Argus: building for T-Deck (BOARD_TDECK)")
+endif()
+
 project(argus-zig)
 
 # Link the Zig static library into the final ELF.
