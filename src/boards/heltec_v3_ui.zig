@@ -152,8 +152,10 @@ fn drawSummary() void {
         _ = std.fmt.bufPrint(&gps_buf, "GPS:{d}.{d} {d}sats", .{
             @divTrunc(scanner.gps_lat, 1000000), @abs(@rem(@divTrunc(scanner.gps_lat, 10000), 100)), scanner.gps_sats,
         }) catch {};
+    } else if (scanner.gpsAlive()) {
+        _ = std.fmt.bufPrint(&gps_buf, "GPS:searching({d})", .{scanner.gps_sats_in_view}) catch {};
     } else {
-        _ = std.fmt.bufPrint(&gps_buf, "GPS: NOFIX     ", .{}) catch {};
+        _ = std.fmt.bufPrint(&gps_buf, "GPS: no signal  ", .{}) catch {};
     }
     oledDrawStr(0, 52, &gps_buf);
     oledUpdate();
@@ -385,12 +387,15 @@ fn drawSystem() void {
     var probe_buf: [24]u8 = undefined;
     _ = std.fmt.bufPrint(&probe_buf, "Carrier:{d}", .{scanner.carrier_probes}) catch {};
     oledDrawStr(0, 34, &probe_buf);
+    var gps_buf: [24]u8 = undefined;
     if (scanner.gps_fix) {
-        var gps_buf: [24]u8 = undefined;
         _ = std.fmt.bufPrint(&gps_buf, "GPS:{d}sat 3Dfix", .{scanner.gps_sats}) catch {};
         oledDrawStr(0, 34, &gps_buf);
+    } else if (scanner.gpsAlive()) {
+        _ = std.fmt.bufPrint(&gps_buf, "GPS:search({d}) ", .{scanner.gps_sats_in_view}) catch {};
+        oledDrawStr(0, 34, &gps_buf);
     } else {
-        oledDrawStr(0, 34, "GPS: no fix    ");
+        oledDrawStr(0, 34, "GPS: no signal  ");
     }
 
     const mv = main.battery_read_mv();

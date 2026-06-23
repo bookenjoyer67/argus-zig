@@ -160,6 +160,7 @@
   <div class="bar">
     <span>Uptime: <span id="uptime" class="mono">--</span></span>
     <span>Battery: <span id="batt" class="mono">--</span></span>
+    <span>GPS: <span id="gps" class="mono">--</span></span>
     <span>Threat: <span id="threat" class="pill clear">clear</span></span>
     <span class="spacer"></span>
     <a href="/api/export/csv">Export CSV</a>
@@ -191,6 +192,11 @@ function setTile(id, n) {
 function fmtUptime(s) {
   const h = Math.floor(s/3600), m = Math.floor((s%3600)/60);
   return h + 'h ' + m + 'm';
+}
+function gpsText(s) {
+  if (s.gps_state === 'fix') return s.gps_sats + ' sat fix';
+  if (s.gps_state === 'searching') return 'searching (' + s.gps_sats_in_view + ')';
+  return 'no signal';
 }
 function ago(s) {
   if (s < 60) return s + 's ago';
@@ -361,6 +367,7 @@ async function pollStatus() {
     pill.textContent = s.threat_level;
     document.getElementById('uptime').textContent = fmtUptime(s.uptime_seconds);
     document.getElementById('batt').textContent = s.battery_pct + '%';
+    document.getElementById('gps').textContent = gpsText(s);
     document.getElementById('ver').textContent = 'v' + s.firmware_version;
     runningVersion = s.firmware_version;
     refreshOtaButton();

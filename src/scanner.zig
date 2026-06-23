@@ -629,7 +629,19 @@ pub fn restoreSession() void {
 pub var gps_lat: i32 = 0;   // e.g. 38117300 = 38.117300°
 pub var gps_lon: i32 = 0;   // e.g. -90199400 = -90.199400°
 pub var gps_fix: bool = false;
-pub var gps_sats: u8 = 0;
+pub var gps_sats: u8 = 0;          // satellites used in the fix (GGA)
+pub var gps_sats_in_view: u8 = 0;  // satellites tracked but not yet fixed (GSV)
+
+/// GPS liveness: refilled to GPS_NMEA_TTL_REFILL whenever a recognized NMEA
+/// sentence is parsed, and decremented once per main-loop iteration. Non-zero
+/// means the module is alive and sending data (distinguishes "searching" from
+/// a dead/unplugged GPS that shows no NMEA at all).
+pub var gps_nmea_ttl: u16 = 0;
+pub const GPS_NMEA_TTL_REFILL: u16 = 200;
+
+pub fn gpsAlive() bool {
+    return gps_nmea_ttl > 0;
+}
 
 /// NMEA sentence line accumulator. gps_read() fills this buffer,
 /// and on '\n', parseNmea() processes the complete sentence.
@@ -655,6 +667,7 @@ pub fn parseNmea(line: []const u8) void {
 
     // xxGGA — fix data (any talker: GP/GN/GL/GA/GB — multi-GNSS uses GN)
     if (talker.len >= 5 and std.mem.eql(u8, talker[talker.len - 3 ..], "GGA")) {
+        gps_nmea_ttl = GPS_NMEA_TTL_REFILL;
         var fields: [15][]const u8 = undefined;
         var fi: usize = 0;
         var pos: usize = start;
@@ -666,23 +679,25 @@ pub fn parseNmea(line: []const u8) void {
 
         // fields[]: 0=time, 1=lat (DDMM.MMMM), 2=N/S, 3=lon (DDDMM.MMMM),
         //           4=E/W, 5=fix quality, 6=satellites used
-        if (fi >= 7 and fields[1].len > 0 and fields[3].len > 0) {
+        // Fix quality (0=invalid) drives gps_fix — set true OR false so a lost
+        // fix is reflected instead of latching on forever.
+        if (fi >= 6 and fields[5].len > 0) {
+            gps_fix = fields[5][0] != '0';
+        }
+        if (fi >= 7 and fields[6].len > 0) {
+            gps_sats = std.fmt.parseInt(u8, fields[6], 10) catch 0;
+        }
+        // Position only when actually fixed (lat/lon are empty otherwise).
+        if (gps_fix and fi >= 6 and fields[1].len > 0 and fields[3].len > 0) {
             gps_lat = parseNmeaCoord(fields[1], fields[2]);
             gps_lon = parseNmeaCoord(fields[3], fields[4]);
-
-            // Fix quality: 0=invalid, 1=GPS, 2=DGPS, ...
-            gps_fix = fields[5].len > 0 and fields[5][0] != '0';
-
-            // Satellite count
-            if (fields[6].len > 0) {
-                gps_sats = std.fmt.parseInt(u8, fields[6], 10) catch 0;
-            }
         }
         return;
     }
 
     // xxRMC — recommended minimum (fallback for lat/lon; GN on multi-GNSS)
     if (talker.len >= 5 and std.mem.eql(u8, talker[talker.len - 3 ..], "RMC")) {
+        gps_nmea_ttl = GPS_NMEA_TTL_REFILL;
         var fields: [10][]const u8 = undefined;
         var fi: usize = 0;
         var pos: usize = start;
@@ -692,14 +707,36 @@ pub fn parseNmea(line: []const u8) void {
             pos = end + 1;
         }
 
-        // fields[]: 0=time, 1=status (A=valid), 2=lat, 3=N/S, 4=lon, 5=E/W
-        if (fi >= 6 and fields[1].len > 0 and fields[1][0] == 'A') {
-            const lat = parseNmeaCoord(fields[2], fields[3]);
-            const lon = parseNmeaCoord(fields[4], fields[5]);
-            if (lat != 0) gps_lat = lat;
-            if (lon != 0) gps_lon = lon;
-            gps_fix = true;
+        // fields[]: 0=time, 1=status (A=valid/V=void), 2=lat, 3=N/S, 4=lon, 5=E/W
+        if (fi >= 6 and fields[1].len > 0) {
+            gps_fix = fields[1][0] == 'A';
+            if (gps_fix) {
+                const lat = parseNmeaCoord(fields[2], fields[3]);
+                const lon = parseNmeaCoord(fields[4], fields[5]);
+                if (lat != 0) gps_lat = lat;
+                if (lon != 0) gps_lon = lon;
+            }
         }
+        return;
+    }
+
+    // xxGSV — satellites in view (tracked even before a fix). Lets the UI show
+    // "searching (N)" instead of a bare "no fix" while the antenna sees sky.
+    if (talker.len >= 5 and std.mem.eql(u8, talker[talker.len - 3 ..], "GSV")) {
+        gps_nmea_ttl = GPS_NMEA_TTL_REFILL;
+        // fields[]: 0=num msgs, 1=msg number, 2=total satellites in view
+        var fields: [4][]const u8 = undefined;
+        var fi: usize = 0;
+        var pos: usize = start;
+        while (fi < 4 and pos < line.len) : (fi += 1) {
+            const end = std.mem.indexOfScalarPos(u8, line, pos, ',') orelse line.len;
+            fields[fi] = line[pos..end];
+            pos = end + 1;
+        }
+        if (fi >= 3 and fields[2].len > 0) {
+            gps_sats_in_view = std.fmt.parseInt(u8, fields[2], 10) catch gps_sats_in_view;
+        }
+        return;
     }
 }
 

@@ -46,6 +46,12 @@ fn boolStr(b: bool) []const u8 {
     return if (b) "true" else "false";
 }
 
+fn gpsStateStr() []const u8 {
+    if (scanner.gps_fix) return "fix";
+    if (scanner.gpsAlive()) return "searching";
+    return "nosignal";
+}
+
 fn kindName(kind: display.TrackerType) []const u8 {
     return switch (kind) {
         .airtag => "airtag",
@@ -124,6 +130,11 @@ pub export fn zig_api_status(out: [*]u8, max: u32) callconv(.c) u32 {
     b.add("\"mesh_peers\":{d},", .{mesh.onlinePeerCount()});
     b.add("\"total_detections\":{d},", .{scanner.session_total});
     b.add("\"threat_level\":\"{s}\",", .{main.threatLevelStr()});
+    b.add("\"gps_state\":\"{s}\",", .{gpsStateStr()});
+    b.add("\"gps_sats\":{d},", .{scanner.gps_sats});
+    b.add("\"gps_sats_in_view\":{d},", .{scanner.gps_sats_in_view});
+    b.add("\"gps_lat\":{d},", .{scanner.gps_lat});
+    b.add("\"gps_lon\":{d},", .{scanner.gps_lon});
     b.add("\"firmware_version\":\"{s}\"", .{FIRMWARE_VERSION});
     b.add("}}", .{});
     return @intCast(b.len);

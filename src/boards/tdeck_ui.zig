@@ -196,16 +196,19 @@ fn drawDashboard() void {
     drawStrScaled(56, 120, std.fmt.bufPrint(&bbuf, "{d}.{d}V", .{ v / 1000, (v / 100) % 10 }) catch "", 2);
     drawBar(180, 122, 130, 16, pct);
 
-    // GPS
+    // GPS — fix / searching / no signal
     col(MUTED);
     drawStrScaled(8, 150, "GPS", 2);
+    var gbuf: [24]u8 = undefined;
     if (scanner.gps_fix) {
         col(ACCENT);
-        var gbuf: [24]u8 = undefined;
         drawStrScaled(56, 150, std.fmt.bufPrint(&gbuf, "{d} sat fix", .{scanner.gps_sats}) catch "", 2);
+    } else if (scanner.gpsAlive()) {
+        col(GOLD);
+        drawStrScaled(56, 150, std.fmt.bufPrint(&gbuf, "searching ({d})", .{scanner.gps_sats_in_view}) catch "", 2);
     } else {
         col(MUTED);
-        drawStrScaled(56, 150, "no fix", 2);
+        drawStrScaled(56, 150, "no signal", 2);
     }
 
     // Latest detections (up to 3)
@@ -432,13 +435,16 @@ fn drawSystem() void {
     var vbuf: [24]u8 = undefined;
     drawStrScaled(8, 104, std.fmt.bufPrint(&vbuf, "Bat {d}.{d}V {d}%", .{ v / 1000, (v / 100) % 10, batteryPct(mv) }) catch "", 2);
 
+    var gbuf: [24]u8 = undefined;
     if (scanner.gps_fix) {
         col(ACCENT);
-        var gbuf: [24]u8 = undefined;
         drawStrScaled(8, 132, std.fmt.bufPrint(&gbuf, "GPS {d} sat fix", .{scanner.gps_sats}) catch "", 2);
+    } else if (scanner.gpsAlive()) {
+        col(GOLD);
+        drawStrScaled(8, 132, std.fmt.bufPrint(&gbuf, "GPS searching ({d})", .{scanner.gps_sats_in_view}) catch "", 2);
     } else {
         col(MUTED);
-        drawStrScaled(8, 132, "GPS no fix", 2);
+        drawStrScaled(8, 132, "GPS no signal", 2);
     }
 
     col(TEXT);

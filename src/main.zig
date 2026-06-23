@@ -942,6 +942,10 @@ export fn zig_main() callconv(.c) void {
             }
         }
 
+        // GPS liveness decay: when no NMEA arrives for a while, gps_nmea_ttl
+        // reaches 0 and the UI shows "no signal" instead of "searching".
+        if (scanner.gps_nmea_ttl > 0) scanner.gps_nmea_ttl -= 1;
+
         // --- Yield to FreeRTOS ---
         // 10ms sleep lets other tasks run (idle task, WiFi task if enabled).
         // This is the minimum sleep — vTaskDelay(1) = one tick = 10ms.
