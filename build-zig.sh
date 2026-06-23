@@ -60,6 +60,7 @@ pub const display_driver = impl.display_driver;
 pub const led = impl.led;
 pub const button = impl.button;
 pub const input = impl.input;
+pub const alert = impl.alert;
 pub const ui = impl.ui;
 EOF
 

@@ -6,6 +6,7 @@
 
 const main = @import("../main.zig");
 const st7789 = @import("../hal/st7789.zig");
+const scanner = @import("../scanner.zig");
 
 // Verified pins (official Lilygo utilities.h). Most live in main/tft.c;
 // kept here for documentation + future phases.
@@ -31,6 +32,10 @@ pub const PIN_TB_CLICK: u32 = 0; // center click (also the boot strap)
 // T-Deck keyboard (main/keyboard.c, compiled only under BOARD_TDECK).
 extern fn kbd_init() i32;
 extern fn kbd_read() i32;
+
+// T-Deck I2S speaker (main/speaker.c).
+extern fn spk_init() i32;
+extern fn spk_tone(freq_hz: i32, ms: i32, vol: i32) void;
 
 // ---- Common board interface ----
 /// ST7789 framebuffer backend (the gfx backend).
@@ -62,6 +67,7 @@ pub fn init() bool {
     if (st7789.init() != 0) return true;
 
     _ = kbd_init();
+    _ = spk_init();
     // Trackball: direction GPIOs + center-click as input with pullup
     // (each pulses active-LOW as the ball rolls / is clicked).
     _ = main.gpio_pin_init(PIN_TB_UP, main.GPIO_INPUT, main.GPIO_PULL_UP);
@@ -71,11 +77,31 @@ pub fn init() bool {
     _ = main.gpio_pin_init(PIN_TB_CLICK, main.GPIO_INPUT, main.GPIO_PULL_UP);
 
     ui.drawBoot(""); // big "ARGUS"
-    main.delayMs(400);
+    spk_tone(660, 90, 45); // startup chime: two rising notes
+    spk_tone(990, 130, 45);
+    main.delayMs(300);
     ui.drawBoot("Scanning...");
     main.delayMs(400);
     ui.drawPage();
     return false;
+}
+
+/// Audio alert by threat score (called from the main loop on a rising tier).
+/// CERT = urgent triple, HIGH = double, MED = single beep. Blocking (~0.1-0.4s).
+pub fn alert(score: u8) void {
+    if (score >= scanner.SCORE_CERT) {
+        var i: u8 = 0;
+        while (i < 3) : (i += 1) {
+            spk_tone(1568, 80, 70);
+            main.delayMs(50);
+        }
+    } else if (score >= scanner.SCORE_HIGH) {
+        spk_tone(1175, 100, 60);
+        main.delayMs(60);
+        spk_tone(1175, 100, 60);
+    } else if (score >= scanner.SCORE_MED) {
+        spk_tone(880, 120, 50);
+    }
 }
 
 /// Keyboard + trackball input → shared UI actions.

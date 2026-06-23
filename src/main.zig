@@ -685,6 +685,7 @@ export fn zig_main() callconv(.c) void {
 
     var had_new: bool = false; // true if a new tracker was detected this iteration
     var last_draw_ms: u32 = 0; // throttles live page refresh
+    var prev_alert_tier: u8 = 0; // last audio-alert threat tier (rising-edge beep)
 
     while (true) {
         had_new = false;
@@ -874,6 +875,29 @@ export fn zig_main() callconv(.c) void {
         // Non-blocking PWM pattern reflecting the highest recent threat score,
         // or the stealth / error state. Replaces the old heartbeat blink.
         updateLed();
+
+        // --- Audio alert (rising threat tier) ---
+        // Beep on boards with a speaker (T-Deck) when the threat tier rises.
+        // Heltec's board.alert() is a no-op — its LED already conveys this.
+        if (!stealth_mode) {
+            const lvl = currentThreatLevel();
+            const tier: u8 = if (scanner.stingray_alert_active or lvl >= scanner.SCORE_CERT)
+                3
+            else if (lvl >= scanner.SCORE_HIGH)
+                2
+            else if (lvl >= scanner.SCORE_MED)
+                1
+            else
+                0;
+            if (tier > prev_alert_tier) {
+                board.alert(switch (tier) {
+                    3 => scanner.SCORE_CERT,
+                    2 => scanner.SCORE_HIGH,
+                    else => scanner.SCORE_MED,
+                });
+            }
+            prev_alert_tier = tier;
+        }
 
         // --- Stingray burst detector ---
         // Roll the carrier-probe bucket window and check for / clear alerts.

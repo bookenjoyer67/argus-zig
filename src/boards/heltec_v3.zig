@@ -29,6 +29,12 @@ pub const button = @import("../hal/button.zig").Button(PIN_BUTTON);
 /// Board-specific 8-page OLED UI.
 pub const ui = @import("heltec_v3_ui.zig");
 
+/// Audio alert hook. The Heltec has no speaker — its threat-level LED already
+/// conveys this — so this is a no-op (kept for the common board interface).
+pub fn alert(score: u8) void {
+    _ = score;
+}
+
 /// PRG-button gesture FSM (was inline in zig_main). Blocking/timing-based:
 /// debounce → hold (>=1.2s CSV dump, >=15s also clear) → else 350ms
 /// double-press window (double = stealth, single = next page). Drives the
