@@ -52,11 +52,28 @@ pub fn kindStr(kind: TrackerType) []const u8 {
     };
 }
 
-/// Map battery millivolts to a percentage (3.3V = 0%, 4.2V = 100%).
+/// Map battery millivolts to a percentage using a piecewise-linear LiPo
+/// discharge curve (the voltage→charge relationship is very nonlinear — a
+/// flat linear 3.3–4.2 V map reads wrong in the middle of the range).
 pub fn batteryPct(mv: i32) u8 {
-    if (mv < 3300) return 0;
-    if (mv > 4200) return 100;
-    return @intCast((@as(u32, @intCast(mv)) - 3300) * 100 / 900);
+    // (mV, %) breakpoints, high → low.
+    const pts = [_][2]i32{
+        .{ 4200, 100 }, .{ 4100, 90 }, .{ 4000, 80 }, .{ 3900, 70 },
+        .{ 3800, 60 },  .{ 3700, 45 }, .{ 3600, 25 }, .{ 3500, 12 },
+        .{ 3400, 5 },   .{ 3300, 0 },
+    };
+    if (mv >= pts[0][0]) return 100;
+    if (mv <= pts[pts.len - 1][0]) return 0;
+    var i: usize = 0;
+    while (i < pts.len - 1) : (i += 1) {
+        const hi = pts[i]; // higher voltage / higher %
+        const lo = pts[i + 1]; // lower voltage / lower %
+        if (mv <= hi[0] and mv >= lo[0]) {
+            const p = lo[1] + @divTrunc((mv - lo[0]) * (hi[1] - lo[1]), hi[0] - lo[0]);
+            return @intCast(p);
+        }
+    }
+    return 0;
 }
 
 // ---- Page-cycle state (shared between main loop and the board UI) ----
