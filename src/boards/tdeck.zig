@@ -101,7 +101,7 @@ pub const input = struct {
         const key = kbd_read();
         if (key > 0 and key != last_key) {
             switch (key) {
-                '1'...'6' => {
+                '1'...'7' => {
                     main.gotoPage(@intCast(key - '1'));
                     ui.drawPage();
                 },
