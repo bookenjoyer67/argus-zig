@@ -23,18 +23,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/configure-pages@v5
-      - name: Fetch firmware binaries + version manifest
+      - name: Fetch firmware binaries + bump manifests
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          mkdir -p web/firmware
-          gh release download --pattern 'argus-merged.bin' --dir web/firmware --clobber || true
+          mkdir -p web/firmware/heltec-v3 web/firmware/tdeck
+          # Per-board merged images for the web flasher (USB).
+          gh release download --pattern 'argus-heltec-v3-merged.bin' --dir web/firmware/heltec-v3 --clobber || true
+          gh release download --pattern 'argus-tdeck-merged.bin' --dir web/firmware/tdeck --clobber || true
+          # App-only image for OTA (Heltec for now).
           gh release download --pattern 'argus-zig.bin' --dir web/firmware --clobber || true
           TAG=$(gh release view --json tagName --jq .tagName 2>/dev/null || echo "")
           VER=${TAG#v}
           if [ -n "$VER" ]; then
             echo "{\"version\":\"$VER\",\"url\":\"https://bookenjoyer67.github.io/argus-zig/web/firmware/argus-zig.bin\"}" > web/firmware/version.json
-            jq --arg v "$VER" '.version=$v' web/firmware/manifest.json > /tmp/m.json && mv /tmp/m.json web/firmware/manifest.json
+            for m in web/firmware/heltec-v3/manifest.json web/firmware/tdeck/manifest.json; do
+              jq --arg v "$VER" '.version=$v' "$m" > /tmp/m.json && mv /tmp/m.json "$m"
+            done
           else
             echo "no release yet — flasher/OTA will 404 until one exists"
           fi

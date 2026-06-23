@@ -29,22 +29,40 @@
   .note{ font-size:12px; color:var(--muted); margin-top:14px; line-height:1.6; }
   .warn{ color:var(--gold); }
   a{ color:var(--accent); }
+  .pick{ display:block; font-size:13px; color:var(--muted); margin:0 0 16px;
+    letter-spacing:1px; text-transform:uppercase; }
+  .pick select{ display:block; margin-top:6px; width:100%; padding:10px;
+    border-radius:8px; border:1px solid #1d2a3a; background:rgba(6,10,18,.8);
+    color:var(--text); font:inherit; font-size:15px; }
+  .pick select:focus{ outline:none; border-color:var(--accent);
+    box-shadow:0 0 10px rgba(30,255,157,.35); }
 </style>
 </head>
 <body>
 <div class="wrap">
   <h1>ARGUS</h1>
-  <div class="tag">WEB FLASHER &mdash; HELTEC WIFI LORA 32 V3 (ESP32-S3)</div>
+  <div class="tag">WEB FLASHER &mdash; ESP32-S3</div>
 
   <div class="panel">
     <h2>Flash your device</h2>
+    <label class="pick">Board
+      <select id="board">
+        <option value="heltec-v3">Heltec WiFi LoRa 32 V3</option>
+        <option value="tdeck">Lilygo T-Deck</option>
+      </select>
+    </label>
     <ol>
       <li>Use <b>desktop Chrome or Edge</b> (Web Serial isn't supported on Firefox, Safari, or mobile).</li>
-      <li>Connect the Heltec V3 over <b>USB-C</b>.</li>
+      <li id="connect-step">Connect the device over <b>USB-C</b>.</li>
       <li>Click <b>Install</b>, pick the serial port, and confirm.</li>
     </ol>
+    <p id="tdeck-note" class="note warn" style="display:none">
+      <b>T-Deck:</b> if the browser can't connect, force download mode &mdash; hold the
+      trackball center-click, tap <b>RESET</b>, then release &mdash; and click Install again.
+      Tap <b>RESET</b> once more after flashing to boot.
+    </p>
     <p style="margin:18px 0 0">
-      <esp-web-install-button manifest="firmware/manifest.json">
+      <esp-web-install-button id="btn" manifest="firmware/heltec-v3/manifest.json">
         <button slot="activate" class="flashbtn">Install Argus</button>
         <span slot="unsupported" class="warn">Your browser can't flash &mdash; use desktop Chrome or Edge.</span>
         <span slot="not-allowed" class="warn">Open this page over HTTPS to flash.</span>
@@ -66,5 +84,20 @@
     </ol>
   </div>
 </div>
+<script>
+  const boardSel = document.getElementById('board');
+  const btn = document.getElementById('btn');
+  const tdeckNote = document.getElementById('tdeck-note');
+  const connectStep = document.getElementById('connect-step');
+  const names = { 'heltec-v3': 'Heltec V3', 'tdeck': 'T-Deck' };
+  function updateBoard() {
+    const b = boardSel.value;
+    btn.manifest = `firmware/${b}/manifest.json`;
+    tdeckNote.style.display = b === 'tdeck' ? '' : 'none';
+    connectStep.innerHTML = `Connect the <b>${names[b]}</b> over <b>USB-C</b>.`;
+  }
+  boardSel.addEventListener('change', updateBoard);
+  updateBoard();
+</script>
 </body>
 </html>

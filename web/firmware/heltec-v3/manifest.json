@@ -1,12 +1,12 @@
 {
-  "name": "Argus",
+  "name": "Argus — Heltec WiFi LoRa 32 V3",
   "version": "1.0.0",
   "new_install_prompt_erase": true,
   "builds": [
     {
       "chipFamily": "ESP32-S3",
       "parts": [
-        { "path": "argus-merged.bin", "offset": 0 }
+        { "path": "argus-heltec-v3-merged.bin", "offset": 0 }
       ]
     }
   ]

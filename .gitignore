@@ -4,6 +4,12 @@ zig-out/
 zig-cache/
 .zig-cache/
 src/board.zig
+dist/
+
+# Firmware binaries (produced by tools/release.sh, fetched into web/firmware/
+# by the Pages workflow — never committed; only the manifests are tracked)
+web/firmware/**/*.bin
+web/firmware/version.json
 
 # ESP-IDF generated
 sdkconfig
