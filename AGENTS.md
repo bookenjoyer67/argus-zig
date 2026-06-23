@@ -171,14 +171,23 @@ latest release into `web/firmware/<board>/`, writes `version.json` from the
 release tag, and `jq`-bumps the per-board `manifest.json` versions. Missing
 binaries fail loudly — a manifest is never deployed pointing at a 404.
 
-**IMPORTANT — release order matters.** A push to `main` triggers a Pages
-deploy before the release exists, so `gh release view` (no `--tag`) returns
-the *previous* tag and the the deploy races with the release build. To avoid
-this: **(1)** bump the `web/firmware/*/manifest.json` versions by hand as
-part of the release commit, and **(2)** after the push-to-main Pages deploy
-finishes, trigger a second run with `gh workflow run pages.yml --ref main`.
-The release script (`tools/release.sh`) does step 2 automatically, but step 1
-is manual — the local committed manifests are the deploy-time fallback.
+**Release checklist** — two things must be done by hand before running `tools/release.sh`:
+
+1. **Bump manifest versions.** Edit `web/firmware/heltec-v3/manifest.json` and
+   `web/firmware/tdeck/manifest.json` to the new version. The Pages workflow
+   `jq`-bumps them at deploy time, but a push to `main` triggers a Pages deploy
+   that races with the release creation — `gh release view` (no `--tag`) returns
+   the *previous* tag and the deploy runs with the wrong version. Committing the
+   bumped manifests ahead of time ensures the push-to-main deploy is correct even
+   if it finishes first.
+
+2. **Bump `FIRMWARE_VERSION` in `src/main.zig`.** Zig's incremental build
+   reuses `zig-cache/` artifacts across `build-zig.sh` runs — a verification
+   build made *before* the version bump produces a stale `libargus.a` with the
+   old version string. `tools/release.sh` now purges `zig-cache/` + `zig-out/`
+   before each board build, but an early dry-run build can still pollute the
+   session. Bump the version **first**, then run the release script in a clean
+   session.
 
 ## Button
 

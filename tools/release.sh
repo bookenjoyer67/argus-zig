@@ -39,6 +39,9 @@ build_board() {
     echo "=== Building $board -> argus-$slug-merged.bin ==="
 
     # Stage 1 — Zig static library for this board.
+    # Purge the Zig build cache so a bumped FIRMWARE_VERSION is always
+    # recompiled — incremental builds reuse stale .a files otherwise.
+    rm -rf zig-cache zig-out
     BOARD="$board" ./build-zig.sh
 
     # Stage 2 — clean ESP-IDF reconfigure so a previous board's sdkconfig never
