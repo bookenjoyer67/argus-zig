@@ -171,6 +171,15 @@ latest release into `web/firmware/<board>/`, writes `version.json` from the
 release tag, and `jq`-bumps the per-board `manifest.json` versions. Missing
 binaries fail loudly — a manifest is never deployed pointing at a 404.
 
+**IMPORTANT — release order matters.** A push to `main` triggers a Pages
+deploy before the release exists, so `gh release view` (no `--tag`) returns
+the *previous* tag and the the deploy races with the release build. To avoid
+this: **(1)** bump the `web/firmware/*/manifest.json` versions by hand as
+part of the release commit, and **(2)** after the push-to-main Pages deploy
+finishes, trigger a second run with `gh workflow run pages.yml --ref main`.
+The release script (`tools/release.sh`) does step 2 automatically, but step 1
+is manual — the local committed manifests are the deploy-time fallback.
+
 ## Button
 
 | Gesture | Action |
