@@ -65,6 +65,8 @@ extern int tdeck_spi_bus_init(void); // shared bus init (tft.c)
 #define OP_GET_STATUS             0xC0
 #define OP_CALIBRATE              0x89
 #define OP_SET_REGULATOR_MODE     0x96
+#define OP_SET_DIO3_AS_TCXO_CTRL  0x97
+#define OP_SET_DIO2_AS_RF_SWITCH  0x9D
 
 // --- IRQ masks ---
 #define IRQ_TX_DONE     (1 << 0)
@@ -310,6 +312,20 @@ int lora_init(void) {
     }
 
     // Configure SX1262 — chip is in STDBY_RC after reset
+#ifdef BOARD_TDECK
+    // The T-Deck's SX1262 module uses a TCXO (powered via DIO3) and routes the
+    // antenna through DIO2 (RF switch) — unlike the Heltec's XTAL + HW switch.
+    // Enable the TCXO and recalibrate before switching to the XOSC, otherwise
+    // the radio has no stable clock and can't actually transmit/receive.
+    {
+        uint8_t tcxo[4] = { 0x02, 0x00, 0x01, 0x40 }; // DIO3 = 1.8V, ~5ms startup
+        lora_cmd(OP_SET_DIO3_AS_TCXO_CTRL, tcxo, 4);
+        uint8_t rfsw = 0x01;
+        lora_cmd(OP_SET_DIO2_AS_RF_SWITCH, &rfsw, 1);
+        lora_calibrate(); // recalibrate all blocks after enabling the TCXO
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+#endif
     lora_set_standby(0x01);  // standby with XOSC
     vTaskDelay(pdMS_TO_TICKS(10));
     lora_set_packet_type(0x01);      // LoRa mode
