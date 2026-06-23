@@ -36,6 +36,13 @@ jobs:
           TAG=$(gh release view --json tagName --jq .tagName 2>/dev/null || echo "")
           VER=${TAG#v}
           if [ -n "$VER" ]; then
+            # The published manifests reference these bins by name; if the latest
+            # release doesn't carry them the flasher 404s. Fail loudly instead of
+            # silently deploying a manifest that points at a missing binary.
+            missing=0
+            [ -f web/firmware/heltec-v3/argus-heltec-v3-merged.bin ] || { echo "::error::release $TAG is missing argus-heltec-v3-merged.bin"; missing=1; }
+            [ -f web/firmware/tdeck/argus-tdeck-merged.bin ] || { echo "::error::release $TAG is missing argus-tdeck-merged.bin"; missing=1; }
+            [ "$missing" -eq 0 ] || { echo "::error::cut a release carrying the per-board merged bins (tools/release.sh)"; exit 1; }
             echo "{\"version\":\"$VER\",\"url\":\"https://bookenjoyer67.github.io/argus-zig/web/firmware/argus-zig.bin\"}" > web/firmware/version.json
             for m in web/firmware/heltec-v3/manifest.json web/firmware/tdeck/manifest.json; do
               jq --arg v "$VER" '.version=$v' "$m" > /tmp/m.json && mv /tmp/m.json "$m"

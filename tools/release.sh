@@ -8,11 +8,21 @@
 #   argus-<slug>-merged.bin   full image @ offset 0 (web flasher / USB)
 #   argus-<slug>.bin          app-only image (OTA)
 #
-# Usage: tools/release.sh [tag]   (default tag: v1.0.0)
+# Usage: tools/release.sh [tag]   (default tag: v<FIRMWARE_VERSION from src/main.zig>)
 set -eo pipefail
 
-TAG="${1:-v1.0.0}"
 cd "$(dirname "$0")/.."
+
+# Single source of truth: FIRMWARE_VERSION in src/main.zig drives the release
+# tag, which pages.yml turns into web/firmware/version.json + the per-board
+# manifest versions. Pass an explicit tag to override.
+FW_VERSION=$(grep -oE 'FIRMWARE_VERSION = "[^"]+"' src/main.zig | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
+if [ -z "$FW_VERSION" ]; then
+    echo "ERROR: could not read FIRMWARE_VERSION from src/main.zig" >&2
+    exit 1
+fi
+TAG="${1:-v$FW_VERSION}"
+echo "=== Releasing Argus $TAG (firmware $FW_VERSION) ==="
 
 echo "=== ESP-IDF env ==="
 # shellcheck disable=SC1090
