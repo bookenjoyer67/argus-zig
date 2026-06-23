@@ -53,6 +53,7 @@
   .tile.green { border-color:var(--accent); box-shadow:0 0 12px rgba(30,255,157,.25); }
   .tile.yellow { border-color:var(--gold); box-shadow:0 0 12px rgba(232,194,74,.25); }
   .tile.red { border-color:var(--corrupt); box-shadow:0 0 12px rgba(255,46,46,.3); }
+  .tile.active { outline:2px solid var(--accent); outline-offset:2px; }
   .tile.sr-off { border-color:#2a3340; opacity:.5; }
   .tile.sr-on { border-color:var(--stingray); animation:corruptpulse 1s infinite; }
   @keyframes corruptpulse { 0%,100% { box-shadow:0 0 6px rgba(255,46,46,.4); }
@@ -296,7 +297,7 @@ async function pollConfig() {
       if (map && !mapCentered) { map.setView([la, lo], 14); mapCentered = true; }
       if (map) placeHome(la, lo);
     }
-  } catch (e) {}
+  } catch (e) { console.error('pollConfig:', e); }
 }
 
 function popupHtml(c) {
@@ -349,7 +350,7 @@ async function pollCameras() {
     const cams = await (await fetch('/api/cameras')).json();
     updateMarkers(cams);
     updateMapStats(cams);
-  } catch (e) {}
+  } catch (e) { console.error('pollCameras:', e); }
 }
 
 async function pollStatus() {
@@ -371,7 +372,7 @@ async function pollStatus() {
     document.getElementById('ver').textContent = 'v' + s.firmware_version;
     runningVersion = s.firmware_version;
     refreshOtaButton();
-  } catch (e) {}
+  } catch (e) { console.error('pollStatus:', e); }
 }
 
 async function pollFeed() {
@@ -383,19 +384,20 @@ async function pollFeed() {
         (feedFilter === 'tracker' && ['airtag','tile','samsung','findmy'].includes(d.kind)) ||
         d.kind === feedFilter)
       .map(d => {
+        const k = d.kind || 'unknown';
         const src = d.source === 'mesh' ? ' <span style="opacity:.6">(mesh)</span>' : '';
         const follow = d.followed ? ' <span style="color:var(--corrupt);font-weight:700">&#9888; FOLLOWING</span>' : '';
-        return `<tr class="k-${d.kind}">
-          <td>${d.kind.toUpperCase().slice(0,3)}</td>
-          <td class="mono">${d.oui}</td>
-          <td class="mono">${d.rssi}</td>
-          <td>${d.level}</td>
-          <td class="mono">${d.methods}</td>
+        return `<tr class="k-${k}">
+          <td>${k.toUpperCase().slice(0,3)}</td>
+          <td class="mono">${d.oui || '??:??:??'}</td>
+          <td class="mono">${typeof d.rssi === 'number' ? d.rssi : '?'}</td>
+          <td>${d.level || '?'}</td>
+          <td class="mono">${d.methods || ''}</td>
           <td>${src || '(direct)'}${follow}</td></tr>`;
       });
     document.getElementById('feed').innerHTML =
       rows.length ? rows.join('') : '<tr><td>No matching detections.</td></tr>';
-  } catch (e) {}
+  } catch (e) { console.error('pollFeed:', e); }
 }
 
 async function pollMesh() {
@@ -423,7 +425,7 @@ async function pollMesh() {
         }
       }
     }
-  } catch (e) {}
+  } catch (e) { console.error('pollMesh:', e); }
 }
 
 // Show the Update button only when a newer firmware is published. The dashboard
@@ -461,6 +463,8 @@ document.querySelectorAll('.tile[data-filter]').forEach(t => {
   t.addEventListener('click', () => {
     const f = t.dataset.filter;
     feedFilter = feedFilter === f ? null : f;
+    document.querySelectorAll('.tile').forEach(x => x.classList.remove('active'));
+    if (feedFilter) t.classList.add('active');
     pollFeed();
   });
 });

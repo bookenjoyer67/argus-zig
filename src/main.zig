@@ -383,10 +383,11 @@ pub fn ouiCategory(mac: [6]u8) OuiCategory {
 //   - No out-of-memory error in the BLE callback (ISR context)
 //   - Size known at compile time: MAX_TRACKERS * sizeof(TrackerEntry)
 //
-// When full, the oldest entry is evicted. For a pocket scanner,
-// 64 entries is far more than you'll ever see simultaneously.
+// When full, low-score entries are evicted first; within the same
+// score bracket, the oldest last_seen wins eviction. 96 entries
+// covers even the T-Deck's higher RF sensitivity in dense urban walks.
 
-pub const MAX_TRACKERS = 64;
+pub const MAX_TRACKERS = 96;
 
 pub const TrackerEntry = struct {
     mac: [6]u8,
@@ -647,12 +648,12 @@ pub fn dumpCsv(clear: bool) void {
 /// yet (BLE scanner will add one later).
 ///
 /// Memory: all globals use static allocation. No heap usage.
-///   trackers:    MAX_TRACKERS * 10 bytes = 640 bytes
+///   trackers:    MAX_TRACKERS * ~40 bytes ≈ 4 KB
 ///   oled_buf:    1024 bytes
 ///   FONT_5X7:    ~300 bytes (59 chars * 5)
-///   KNOWN_OUIS:  31 * 3 = 93 bytes
+///   KNOWN_OUIS:  96 * ~30 bytes ≈ 3 KB
 ///   stack:       ~4KB default FreeRTOS task stack
-///   Total:       ~6KB RAM of 512KB available
+///   Total:       ~12 KB RAM of 512 KB available
 
 export fn zig_main() callconv(.c) void {
     // --- Board bring-up ---

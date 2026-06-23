@@ -306,7 +306,7 @@ function renderConfig(cfg){
 function handleLine(line){
   if (!line) return;
   const tag = line[0]; let obj;
-  try { obj = JSON.parse(line.slice(1)); } catch(_) { return; }
+  try { obj = JSON.parse(line.slice(1)); } catch(_) { /* parse error — malformed or truncated JSON */ return; }
   switch (tag){
     case 'S': renderStatus(obj); break;
     case 'D': renderFeed(obj); break;
@@ -368,7 +368,7 @@ function onDisconnect(){
 }
 async function send(cmd){
   if (!rxChar) return;
-  try { await rxChar.writeValue(enc.encode(cmd)); } catch(e){}
+  try { await rxChar.writeValue(enc.encode(cmd)); } catch(e){ console.error('ble send:', cmd, e); }
 }
 
 // --- OTA over BLE ---
@@ -424,7 +424,7 @@ document.querySelectorAll('.tile[data-filter]').forEach(t=>{
     feedFilter = feedFilter===f ? null : f;
     document.querySelectorAll('.tile').forEach(x=>x.classList.remove('active'));
     if (feedFilter) t.classList.add('active');
-    renderFeed(lastDetections);
+    try { renderFeed(lastDetections); } catch(e) { console.error('filter click:', e); }
   });
 });
 

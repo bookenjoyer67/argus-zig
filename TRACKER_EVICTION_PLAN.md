@@ -113,6 +113,27 @@ could still lose entries. The eviction loop is ~2x the current loop
 but 64 iterations through a 40-byte struct is ~30 µs on ESP32-S3 at
 240 MHz — well within the BLE callback budget.
 
+## Hardware sensitivity: T-Deck vs Heltec V3
+
+The two supported boards have meaningfully different RF sensitivity:
+
+| Board | Radio | Antenna | Sensitivity | Table fill risk |
+|-------|-------|---------|------------|-----------------|
+| **T-Deck** | ESP32-S3 module (shielded can) | Espressif-tuned PCB antenna | Higher — picks up ~30-50% more devices | Fills 64 entries in dense urban walks |
+| **Heltec V3** | ESP32-S3FN8 bare chip | Heltec-designed PCB trace antenna, unshielded, adjacent to SX1262 LoRa | Lower — the SX1262 radiates RF noise into 2.4 GHz even when idle | Rarely fills 64 entries |
+
+Root cause: the Heltec V3's SX1262 LoRa chip sits millimeters from the
+BLE/WiFi antenna with no RF isolation. The module-based T-Deck has Espressif's
+factory-tuned matching network and a metal shield can.
+
+This is the SAME firmware — a single `MAX_TRACKERS` constant governs both
+boards. The T-Deck is the stress case.
+
+**Implication for eviction:** the T-Deck makes the table-fill problem real.
+On the Heltec, MAX_TRACKERS=64 might never overflow in practice. On the
+T-Deck, a walk through a dense commercial district can fill it in under
+a minute. We must size for the worst board.
+
 ## Recommended synthesis: do both
 
 | Step | Change | Lines | Rationale |
@@ -123,18 +144,27 @@ but 64 iterations through a 40-byte struct is ~30 µs on ESP32-S3 at
 
 Why not 128? Because 96 + smart eviction together preserve the headroom for
 future features (mesh peer table, dashboard JSON buffer, longer CSV rows)
-while still providing enough capacity for dense walks. If field testing shows
-96 fills, bump to 128 in a single-character change.
+while still providing enough capacity for dense walks. The T-Deck's higher
+sensitivity (~30-50% more devices) makes 96 justified. If field testing on
+the T-Deck shows 96 fills, bump to 128 in a single-character change.
 
 If only one is done now: choose **Option B** (smart eviction). It fixes the
 fundamental bug (ring doorbell evicted by random Espressif) without touching
-a single byte of RAM budget. Bumping the constant can come later when there's
-field data.
+a single byte of RAM budget, and it benefits the T-Deck immediately — the
+board that actually hits the limit. Bumping the constant can come after
+a T-Deck walk test with the smart eviction in place to see if 64 still fills.
 
 ## Verification
 
-- Build: `./build-zig.sh && idf.py build`
-- Walk test: dense urban area, verify SURV count doesn't oscillate
+- Build both boards: `BOARD=heltec_v3 ./build-zig.sh && idf.py build` and
+  `BOARD=tdeck ./build-zig.sh && idf.py build`
+- **Primary test target: T-Deck.** Walk through a dense commercial district
+  (strip mall, downtown block) — the T-Deck is the board that actually fills
+  the table. Verify SURV count doesn't oscillate (entries being evicted and
+  re-detected in a loop).
+- Secondary: same walk with Heltec V3 — confirm it never approaches the limit
+  (validates that the Heltec's lower sensitivity makes this a non-issue on
+  that board).
 - Check: a Ring doorbell (score 100, 30 minutes stale) survives while
   a fresh Espressif commodity (score 25, 5 seconds old) gets dropped
 

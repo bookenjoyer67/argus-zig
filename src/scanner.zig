@@ -512,15 +512,19 @@ pub fn trackDevice(mac: [6]u8, result: ClassResult, rssi: i8) bool {
         main.trackers[main.tracker_count] = entry;
         main.tracker_count += 1;
     } else {
-        var oldest_idx: usize = 0;
-        var oldest_time: u32 = main.trackers[0].last_seen;
+        var evict_idx: usize = 0;
+        var evict_score: u8 = main.trackers[0].score;
+        var evict_time: u32 = main.trackers[0].last_seen;
         for (1..main.MAX_TRACKERS) |i| {
-            if (main.trackers[i].last_seen < oldest_time) {
-                oldest_time = main.trackers[i].last_seen;
-                oldest_idx = i;
+            const s = main.trackers[i].score;
+            const t = main.trackers[i].last_seen;
+            if (s < evict_score) {
+                evict_score = s; evict_time = t; evict_idx = i;
+            } else if (s == evict_score and t < evict_time) {
+                evict_time = t; evict_idx = i;
             }
         }
-        main.trackers[oldest_idx] = entry;
+        main.trackers[evict_idx] = entry;
     }
     return true;
 }

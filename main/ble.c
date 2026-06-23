@@ -389,15 +389,16 @@ int ble_gatt_send(const uint8_t *buf, uint32_t len) {
     return 0;
 }
 
-// Toggle advertising (stealth mode disables it; also drops any connection).
+// Toggle advertising (stealth mode stops advertising; keeps any existing
+// encrypted connection alive so the phone can still receive silently).
 int ble_gatt_set_enabled(int on) {
     g_adv_enabled = on;
     if (on) {
         ble_advertise();
     } else {
         ble_gap_adv_stop();
-        if (g_conn_handle != BLE_HS_CONN_HANDLE_NONE)
-            ble_gap_terminate(g_conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+        // Keep the connection — encrypted and already paired, it doesn't
+        // leak presence. The phone continues receiving the stream silently.
     }
     return 0;
 }
