@@ -1,10 +1,59 @@
-# Multi-Board Support — Implementation Plan
+# Multi-Board Support
 
-Add support for ESP32 boards beyond the Heltec V3. First target: Lilygo T-Deck.
-Architecture introduces a hardware abstraction layer so the detection engine
-runs unchanged across boards. Only display, input, and audio backends differ.
+Argus runs on more than the Heltec V3 — first additional target: the Lilygo
+T-Deck. A hardware-abstraction layer keeps the detection engine
+(`scanner.zig`, `mesh.zig`, `api.zig`) identical across boards; only the
+display, input, audio, storage, and a few peripheral pin maps differ.
 
-**Status:** Plan. Not yet implemented.
+**Status: Implemented.** Both boards are hardware-verified. The Heltec V3
+behaves identically to before; the T-Deck has a color dashboard, keyboard +
+trackball navigation, GPS, audio, microSD, and LoRa.
+
+## What shipped
+
+- **HAL split** — `src/hal/` (`ssd1306.zig`, `gfx.zig` a generic `Gfx(D)` over
+  a display backend, `led.zig`, `button.zig`, `st7789.zig`) and `src/boards/`
+  (`board.zig` traits, `heltec_v3.zig` + `heltec_v3_ui.zig`, `tdeck.zig` +
+  `tdeck_ui.zig`). `display.zig` is now a thin facade.
+- **Board interface** — each board exposes `init`, `initSetup`, `display_driver`,
+  `led`, `button`, `input`, `alert`, `ui`. The main loop calls these
+  board-agnostically (`board.init()`, `board.input.handle()`, `board.alert()`).
+- **Board selection** — a generated `src/board.zig` shim (written by
+  `build-zig.sh` from `BOARD=`) forwards the selected `src/boards/<board>.zig`.
+  *(The `zig build-lib -M` module-map approach in the original plan below was
+  abandoned: board files import root files, so they can't live in a separate
+  module.)*
+- **T-Deck peripherals** — ST7789 over `esp_lcd` with a PSRAM framebuffer
+  (`main/tft.c`, flushed in strips); I2C keyboard + GPIO trackball
+  (`main/keyboard.c`); I2S speaker chime/alerts (`main/speaker.c`); microSD on
+  FATFS and LoRa SX1262, both on the **shared SPI2 bus** (`tft.c` owns an
+  idempotent `tdeck_spi_bus_init()`); u-blox **M10Q GPS @ 38400** (board-aware
+  `gps.c`); board-aware battery ADC.
+- **Color UI** — 7 views (Dashboard / Surveillance / Proximity / History /
+  Trackers / Devices / System) with an RGB565 palette matching the web
+  dashboard. The ST7789 carries a current-color register; the shared `gfx`
+  stays boolean.
+- **Build + flasher** — `BOARD=tdeck ./build-zig.sh`, `sdkconfig.defaults.tdeck`
+  (PSRAM / 16 MB / USB-JTAG console / **16 KB main task stack**),
+  `tools/build-all.sh`, a two-board `tools/release.sh`, and a board picker in
+  `web/flash.html` with per-board manifests.
+
+### Notable fixes found during bring-up
+
+- ST7789 full-frame flush overflowed the SPI queue → flush in horizontal strips.
+- The T-Deck's deep `board.init()` (esp_lcd + FATFS + SX1262) overflowed the
+  3584-byte main task stack and corrupted the WiFi coex table (boot loop) →
+  bumped to 16 KB (T-Deck only).
+- T-Deck NMEA uses the `GN` (multi-GNSS) talker, and a long-standing off-by-one
+  field index broke GGA/RMC parsing on both boards → fixed.
+- The T-Deck SX1262 needs the **TCXO (DIO3)** and **DIO2 RF switch** enabled,
+  unlike the Heltec's XTAL.
+
+---
+
+> The sections below are the original implementation **plan**, kept as a design
+> record. Where it differs from what shipped (e.g. board selection), the
+> "What shipped" summary above is authoritative.
 
 ---
 

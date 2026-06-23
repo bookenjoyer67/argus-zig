@@ -74,6 +74,16 @@ Message type parsing (Basic ID, Location, Self-ID).
 
 8 BLE service UUIDs, firmware version classification, hardware verified.
 
+## Phase 10: Multi-Board Support ✓
+
+Hardware abstraction layer (`src/hal/` + `src/boards/`) so the detection engine
+runs unchanged across boards; board selected at build time via `BOARD=`.
+Second target: the **Lilygo T-Deck** (ESP32-S3) — ST7789 color dashboard (7
+views, web-matched palette), I2C keyboard + trackball navigation, I2S speaker
+alerts, microSD + LoRa on a shared SPI2 bus, u-blox M10Q GPS. Heltec V3 behaves
+identically. Two-board web flasher with a board picker. Both hardware-verified.
+See MULTI_BOARD.md.
+
 ---
 
 ## Remaining Work
@@ -108,5 +118,5 @@ Message type parsing (Basic ID, Location, Self-ID).
 - [ ] OTA firmware updates via GitHub Releases
 - [ ] Community OUI database with PR-based contributions
 - [x] Web flasher (esp-web-tools) for no-toolchain flashing — web/flash.html on
-      GitHub Pages, prebuilt v1.0.0 merged image served from the release
+      GitHub Pages with a board picker, per-board merged images served from the release
 - [ ] 3D-printable enclosure

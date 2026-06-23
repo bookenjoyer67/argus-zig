@@ -2,14 +2,17 @@
 
 ## Project
 
-Passive BLE/WiFi surveillance detection for Heltec WiFi LoRa 32 V3 (ESP32-S3).
-Zig + ESP-IDF. Zero external parts for basic operation. AGPLv3.
+Passive BLE/WiFi surveillance detection on the Heltec WiFi LoRa 32 V3 and the
+Lilygo T-Deck (both ESP32-S3). Zig + ESP-IDF. AGPLv3.
 
-**Status:** Detection engine feature-complete. Raven, ALPR, drone Remote ID,
-consumer cameras, Amazon Sidewalk, and tracker classification all working.
-Hardware-tested. UX refinements active. Web dashboard (base station) working.
-WiFi channel hopping (mobile) and a BLE GATT passkey-paired phone interface
-(`web/ble.html`, hosted on GitHub Pages) shipped.
+**Status:** Detection engine feature-complete (Raven, ALPR, drone Remote ID,
+consumer cameras, Amazon Sidewalk, tracker classification). **Multi-board
+support shipped** — a HAL (`src/hal/` + `src/boards/`) runs the detection engine
+unchanged on both boards; the T-Deck adds a color 7-view dashboard,
+keyboard/trackball navigation, GPS, I2S audio, microSD, and LoRa. Web dashboard
+(base station), BLE GATT passkey-paired phone interface (`web/ble.html`), WiFi
+channel hopping (mobile), and a two-board web flasher all shipped. Both boards
+hardware-verified.
 
 ## Build
 

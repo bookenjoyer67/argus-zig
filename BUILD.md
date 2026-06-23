@@ -1,9 +1,9 @@
-# Build Guide — Argus on Heltec V3
+# Build Guide — Argus (Heltec V3 + Lilygo T-Deck)
 
 > **Just want to flash a device?** You don't need any of this. Open the
 > **[web flasher](https://bookenjoyer67.github.io/argus-zig/web/flash.html)**
-> in desktop Chrome/Edge, plug in over USB-C, click Install. The guide below
-> is for building from source.
+> in desktop Chrome/Edge, pick your board, plug in over USB-C, click Install.
+> The guide below is for building from source.
 
 ## Prerequisites
 
@@ -54,10 +54,32 @@ dependencies into `~/.espressif/`.
 cd ~/argus-zig
 ```
 
+## Board selection
+
+Argus supports two boards. The board is chosen at build time with the `BOARD`
+environment variable (default `heltec_v3`):
+
+| Board | `BOARD` | sdkconfig defaults |
+|-------|---------|--------------------|
+| Heltec WiFi LoRa 32 V3 | `heltec_v3` (default) | `sdkconfig.defaults` |
+| Lilygo T-Deck | `tdeck` | `sdkconfig.defaults` + `sdkconfig.defaults.tdeck` (PSRAM / 16 MB / USB-JTAG console / 16 KB main stack) |
+
+`build-zig.sh` reads `BOARD`, generates a small `src/board.zig` shim that forwards
+the selected `src/boards/<board>.zig`, and builds the Zig static library. The C
+side gets `-DBOARD_TDECK` via `idf.py -DBOARD=tdeck`.
+
+The steps below default to the Heltec; the T-Deck variant is shown inline. To
+build **both** boards into `release/<board>/` in one go (after sourcing ESP-IDF):
+
+```bash
+tools/build-all.sh
+```
+
 ## 4. Build the Zig static library
 
 ```bash
-./build-zig.sh
+./build-zig.sh                  # Heltec V3 (default)
+BOARD=tdeck ./build-zig.sh      # Lilygo T-Deck
 ```
 
 This runs `zig build-lib` targeting `xtensa-freestanding-none -mcpu esp32s3`
@@ -71,10 +93,23 @@ to verify.
 
 ```bash
 source ~/esp/esp-idf/export.sh
+
+# Heltec V3 (default sdkconfig.defaults)
 idf.py set-target esp32s3
+
+# Lilygo T-Deck (layer the T-Deck overrides + define BOARD_TDECK)
+idf.py -DBOARD=tdeck -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.tdeck" set-target esp32s3
 ```
 
-This generates `sdkconfig` and `build/config/sdkconfig.h`. Only needed once.
+After `set-target`, run the NimBLE/partition patch (and, on a board switch,
+`rm -f sdkconfig` + `idf.py fullclean` first so the previous board's config
+doesn't leak in):
+
+```bash
+python tools/patch-sdkconfig.py
+```
+
+This generates `sdkconfig` and `build/config/sdkconfig.h`.
 
 If CMake fails with "component not found," check that `main/CMakeLists.txt`
 lists the correct REQUIRES components for your ESP-IDF version.
@@ -82,39 +117,35 @@ lists the correct REQUIRES components for your ESP-IDF version.
 ## 6. Build the firmware
 
 ```bash
-idf.py build
+idf.py build                                                                   # Heltec
+idf.py -DBOARD=tdeck -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.tdeck" build  # T-Deck
 ```
 
-This compiles ESP-IDF components (FreeRTOS, NimBLE, WiFi, SPIFFS, etc.) and
-links them with `zig-out/libargus.a`. Output: `build/argus-zig.bin` (~228 KB).
+This compiles ESP-IDF components (FreeRTOS, NimBLE, WiFi, displays, etc.) and
+links them with `zig-out/libargus.a`. Output: `build/argus-zig.bin` (~1.4 MB
+with the full detection + UI stack).
 
-Expected output:
-```
-[100%] Linking CXX executable argus-zig.elf
-argus-zig.bin binary size 0x37d60 bytes
-Smallest app partition is 0x100000 bytes. 0xc82a0 bytes (78%) free.
-```
+## 7. Flash
 
-## 7. Flash to the Heltec V3
+**Heltec V3** — a CP2102 USB-UART that auto-resets, on `/dev/ttyUSB0`:
 
 ```bash
-# Plug in USB-C, find the port
 ls /dev/ttyUSB* /dev/ttyACM*
-
-# Flash (adjust port as needed)
 idf.py -p /dev/ttyUSB0 flash
-
-# Monitor serial output
-idf.py -p /dev/ttyUSB0 monitor
+idf.py -p /dev/ttyUSB0 monitor      # console on UART0
 ```
 
-You should see:
-```
-Argus Zig — booting
+**Lilygo T-Deck** — native USB on `/dev/ttyACM0`. It often won't auto-enter the
+bootloader, so force **download mode**: hold the trackball center-click, tap
+**RESET**, release — then flash. Tap **RESET** again after flashing to boot.
+(Console is USB-Serial-JTAG over the same port.)
+
+```bash
+idf.py -p /dev/ttyACM0 -DBOARD=tdeck -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.tdeck" flash
 ```
 
-The onboard LED blinks twice, a startup chirp plays on the buzzer,
-and the main loop starts (LED heartbeat every 3 seconds).
+On boot you should see `Argus Zig — booting`, then the boot logo. On the Heltec
+the white LED blinks the threat-level pattern; the T-Deck plays a startup chime.
 
 ## Rebuild after Zig changes
 
@@ -179,12 +210,7 @@ Use only when linking with Zig's lld (not yet configured for ESP-IDF).
 ### Without OLED (save ~10KB)
 
 Comment out the display section in main.zig and remove oled_buf allocation.
-The device runs headless — buzzer + LED only.
-
-### Without buzzer (save GPIO 3)
-
-Set `PIN_BUZZER` to an unused pin or remove buzzer code entirely.
-LED still provides visual alerts.
+The device runs headless — LED only (no buzzer is fitted; GPIO 3 is free).
 
 ## Development workflow
 
@@ -199,16 +225,18 @@ Full cycle: ~15 seconds. Most of that is flashing and bootloader handshake.
 
 ## Cutting a release (prebuilt firmware + web flasher)
 
-End users flash from a browser, so each release ships a single merged image.
+End users flash from a browser, so each release ships a **per-board merged
+image**. One command builds both boards and publishes them:
 
 ```bash
-tools/release.sh v1.0.0        # build + idf.py merge-bin + gh release create
+tools/release.sh v1.2.0        # build both boards + merge-bin + gh release create
 ```
 
-This runs `./build-zig.sh`, `idf.py build`, `idf.py merge-bin -o argus-merged.bin`,
-and `gh release create <tag> argus-merged.bin`. Publishing the release triggers
-the GitHub Pages workflow (`.github/workflows/pages.yml`), which downloads
-`argus-merged.bin` into `web/firmware/` and redeploys, so
-`web/flash.html` (esp-web-tools) serves the binary same-origin. The manifest
-(`web/firmware/manifest.json`) points at the merged image at offset 0 for
-ESP32-S3.
+For each board it runs `BOARD=<b> ./build-zig.sh`, a clean per-board
+`set-target` + `idf.py build`, and `idf.py merge-bin -o argus-<board>-merged.bin`,
+then `gh release create <tag>` uploading both merged images (Heltec V3 + T-Deck)
+plus the Heltec app image for OTA. Publishing triggers the GitHub Pages workflow
+(`.github/workflows/pages.yml`), which downloads each merged image into
+`web/firmware/<board>/` and redeploys, so `web/flash.html` (esp-web-tools) serves
+them same-origin behind a board picker. Each board's manifest
+(`web/firmware/<board>/manifest.json`) points at its merged image at offset 0.

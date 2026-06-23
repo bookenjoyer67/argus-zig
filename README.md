@@ -8,7 +8,7 @@
 ![Cloud](https://img.shields.io/badge/cloud-none-9d5cff?style=for-the-badge&labelColor=04060d)
 ![Scanning](https://img.shields.io/badge/scanning-passive-3a7bff?style=for-the-badge&labelColor=04060d)
 
-**Passive BLE/WiFi surveillance detection for the Heltec WiFi LoRa 32 V3.**
+**Passive BLE/WiFi surveillance detection on the Heltec WiFi LoRa 32 V3 and the Lilygo T-Deck.**
 Written in Zig + ESP-IDF. Pocket-sized. Zero external parts needed.
 
 </div>
@@ -18,11 +18,12 @@ Written in Zig + ESP-IDF. Pocket-sized. Zero external parts needed.
 ## ✦ Flash it (no toolchain)
 
 Open **[the web flasher](https://bookenjoyer67.github.io/argus-zig/web/flash.html)**
-in desktop Chrome or Edge, plug the Heltec V3 in over USB-C, and click **Install**.
-Accept the erase prompt on a fresh board — it boots into the "Argus Setup"
-onboarding AP. No Zig, no ESP-IDF, no PlatformIO.
+in desktop Chrome or Edge, **pick your board** (Heltec WiFi LoRa 32 V3 or Lilygo
+T-Deck), plug in over USB-C, and click **Install**. Accept the erase prompt on a
+fresh board — it boots into the "Argus Setup" onboarding AP. No Zig, no ESP-IDF,
+no PlatformIO.
 
-(Builders: see BUILD.md for the from-source toolchain.)
+(Builders: see BUILD.md for the from-source toolchain and board selection.)
 
 ![](assets/divider.svg)
 
@@ -37,8 +38,10 @@ onboarding AP. No Zig, no ESP-IDF, no PlatformIO.
 - **Tile / Samsung SmartTag** — service UUID and manufacturer ID matching
 - **IMSI catcher / Stingray** — carrier probe burst analysis (indirect, see STINGRAY.md)
 
-Alerts via buzzer chirp and LED blink. OLED shows device type, RSSI proximity,
-distance estimate, and confidence score. All detections logged to SPIFFS.
+Alerts via threat-level LED patterns (Heltec) or I2S speaker beeps (T-Deck).
+The display shows device type, RSSI proximity, distance estimate, and confidence
+score — a 128×64 OLED on the Heltec, a 320×240 color dashboard on the T-Deck.
+Detections are logged to SPIFFS (Heltec) or microSD (T-Deck).
 
 ![](assets/divider.svg)
 
@@ -57,37 +60,53 @@ No subscription. No cloud. No phone required.
 
 ## ✦ Hardware
 
+Run it on either supported board:
+
+| Board | Built in | Cost |
+|-------|----------|------|
+| **Heltec WiFi LoRa 32 V3** (ESP32-S3) | OLED, LED, LoRa | ~$15 |
+| **Lilygo T-Deck** (ESP32-S3) | Color TFT, QWERTY keyboard + trackball, I2S speaker, microSD, LoRa, GPS (Plus) | ~$45–55 |
+
+Heltec optional add-ons (zero external parts needed for basic operation):
+
 | Part | Required? | Cost |
 |------|-----------|------|
-| Heltec WiFi LoRa 32 V3 (ESP32-S3) | Yes | $15 |
-| Piezo buzzer (GPIO 3) | Optional | $1 |
 | LiPo battery (JST 1.25mm) | Optional | $8 |
 | NEO-6M GPS module | Optional | $5 |
 
-Zero external parts for basic operation — onboard LED blinks on detection.
+On the Heltec, the onboard LED blinks on detection. The T-Deck adds a color
+dashboard, on-device navigation, audible alerts, and (on the Plus) built-in GPS.
 
 ![](assets/divider.svg)
 
 ## ✦ How it works
 
 C modules (ESP-IDF) handle all hardware — NimBLE, WiFi stack, SX1262 LoRa,
-SSD1306 I2C, SPIFFS, GPS UART, ADC. Zig modules handle all logic — BLE/WiFi
-classification, confidence scoring, OUI matching, OLED display, mesh protocol,
-CSV logging, UX.
+displays (SSD1306 / ST7789), SPIFFS / microSD, GPS UART, ADC, I2S, keyboard.
+Zig modules handle all logic — BLE/WiFi classification, confidence scoring, OUI
+matching, the display UI, mesh protocol, CSV logging, UX. A **hardware
+abstraction layer** (`src/hal/` + `src/boards/`) keeps the detection engine
+board-agnostic; only the drivers and pin maps differ per board.
 
 A thin C entry point (`main/main.c`) initializes ESP-IDF subsystems and
 hands control to `zig_main()`. Control never returns to C.
 
 ```
-src/main.zig      — Entry point, main loop, extern fns, tracker table, WiFi hopping
+src/main.zig      — Entry point, main loop, board interface, tracker table, shared actions
 src/scanner.zig   — BLE/WiFi classifiers, scoring, NMEA, CSV, Stingray
-src/display.zig   — SSD1306 driver, 7-page UI, LED alerts, BLE passkey screen
+src/display.zig   — Display facade (TrackerType, labels, page state, re-exports)
 src/mesh.zig      — LoRa mesh packets
 src/api.zig       — JSON renderers for the dashboard + BLE stream
-main/*.c          — Hardware drivers (ble + GATT, wifi, lora, spiffs, gps, oled)
+src/hal/          — ssd1306, gfx (generic), led, button, st7789 drivers
+src/boards/       — board.zig traits + heltec_v3{,_ui}.zig + tdeck{,_ui}.zig
+main/*.c          — Hardware drivers (ble+GATT, wifi, lora, spiffs, gps, tft, keyboard, speaker, sdcard)
+web/flash.html    — Web flasher with a board picker (GitHub Pages)
 web/ble.html      — Web Bluetooth phone client (hosted on GitHub Pages)
 src/ouis.txt      — surveillance MAC OUI prefixes + vendor/category (compile-time parsed)
 ```
+
+Board selection is a build-time `BOARD=` flag (default `heltec_v3`); see
+BUILD.md and MULTI_BOARD.md.
 
 ![](assets/divider.svg)
 
