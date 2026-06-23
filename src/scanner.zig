@@ -630,7 +630,20 @@ pub var gps_lat: i32 = 0;   // e.g. 38117300 = 38.117300°
 pub var gps_lon: i32 = 0;   // e.g. -90199400 = -90.199400°
 pub var gps_fix: bool = false;
 pub var gps_sats: u8 = 0;          // satellites used in the fix (GGA)
-pub var gps_sats_in_view: u8 = 0;  // satellites tracked but not yet fixed (GSV)
+pub var gps_sats_in_view: u8 = 0;  // satellites in view, summed across constellations (GSV)
+
+/// Per-constellation GSV totals indexed by talker second char (Gx): P=GPS,
+/// L=GLONASS, A=Galileo, B=BeiDou. Each constellation emits its own GSV block
+/// with its own totalInView; we keep the latest per-talker value and sum them so
+/// the displayed count doesn't flicker between partial per-constellation counts.
+var gsv_totals: [4]u8 = [_]u8{0} ** 4;
+
+fn gsvIndex(c: u8) u2 {
+    return switch (c) {
+        'P' => 0, 'L' => 1, 'A' => 2, 'B' => 3,
+        else => 0,
+    };
+}
 
 /// GPS liveness: refilled to GPS_NMEA_TTL_REFILL whenever a recognized NMEA
 /// sentence is parsed, and decremented once per main-loop iteration. Non-zero
@@ -733,8 +746,12 @@ pub fn parseNmea(line: []const u8) void {
             fields[fi] = line[pos..end];
             pos = end + 1;
         }
-        if (fi >= 3 and fields[2].len > 0) {
-            gps_sats_in_view = std.fmt.parseInt(u8, fields[2], 10) catch gps_sats_in_view;
+        if (fi >= 3 and fields[2].len > 0 and talker.len >= 2) {
+            const ti = gsvIndex(talker[1]);
+            gsv_totals[ti] = std.fmt.parseInt(u8, fields[2], 10) catch 0;
+            var sum: u16 = 0;
+            for (gsv_totals) |t| sum += t;
+            gps_sats_in_view = @intCast(@min(sum, 255));
         }
         return;
     }
