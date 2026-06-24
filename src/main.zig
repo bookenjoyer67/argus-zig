@@ -462,13 +462,17 @@ const SD_LOG_BUF_SIZE = 4096;
 const SD_FLUSH_LINES: u8 = 64;
 const SD_FLUSH_MS: u32 = 30000;
 
-var sd_log_buf: [SD_LOG_BUF_SIZE]u8 = undefined;
+// Only allocated on boards with storage (T-Deck microSD). Heltec has no SD
+// card — board.storageAppend is a no-op there — so the buffer is sized to 0
+// and the sdLog* bodies compile out, saving 4 KB of RAM.
+var sd_log_buf: [if (board.has_storage) SD_LOG_BUF_SIZE else 0]u8 = undefined;
 var sd_log_len: u16 = 0;
 var sd_log_lines: u8 = 0;
 var sd_last_flush_ms: u32 = 0;
 
 /// Append a CSV line to the in-memory SD log buffer; flush if full.
 pub fn sdLogAppend(line: []const u8) void {
+    if (comptime !board.has_storage) return;
     if (sd_log_len + line.len + 2 > SD_LOG_BUF_SIZE) {
         sdLogFlush();
     }
@@ -483,6 +487,7 @@ pub fn sdLogAppend(line: []const u8) void {
 
 /// Write the accumulated buffer to SD card.
 pub fn sdLogFlush() void {
+    if (comptime !board.has_storage) return;
     if (sd_log_len == 0) return;
     sd_log_buf[sd_log_len] = 0;
     const path: [14:0]u8 = "detections.csv".*;
@@ -493,6 +498,7 @@ pub fn sdLogFlush() void {
 
 /// Format a CSV line and push to the SD log buffer.
 fn sdLogCsvLine(mac: [6]u8, kind: display.TrackerType, rssi: i8, score: u8, methods: u16) void {
+    if (comptime !board.has_storage) return;
     var line: [120]u8 = undefined;
     const ks = display.kindStr(kind);
     const s = std.fmt.bufPrint(&line, "{d},{s},{X:0>2}{X:0>2}{X:0>2}{X:0>2}{X:0>2}{X:0>2},{d},{d},{d},{d},{X:0>2}", .{
@@ -505,6 +511,7 @@ fn sdLogCsvLine(mac: [6]u8, kind: display.TrackerType, rssi: i8, score: u8, meth
 
 /// Check if the periodic flush is due and execute it.
 pub fn sdLogTick(now: u32) void {
+    if (comptime !board.has_storage) return;
     if (sd_log_lines >= SD_FLUSH_LINES or (now -% sd_last_flush_ms) >= SD_FLUSH_MS) {
         sdLogFlush();
         sd_last_flush_ms = now;
@@ -906,6 +913,7 @@ pub fn dumpCsv(clear: bool) void {
     ledOn();
     delayMs(50);
     ledOff();
+    scanner.csvLogFlush();
     spiffs_csv_export();
     if (clear) {
         delayMs(200);
@@ -1265,6 +1273,13 @@ export fn zig_main() callconv(.c) void {
         // GPS liveness decay: when no NMEA arrives for a while, gps_nmea_ttl
         // reaches 0 and the UI shows "no signal" instead of "searching".
         if (scanner.gps_nmea_ttl > 0) scanner.gps_nmea_ttl -= 1;
+
+        // --- SPIFFS deferred writes ---
+        // Detections buffer in RAM and flush to SPIFFS at most once per 30s /
+        // 64 lines; the session counter likewise. This replaces the old per-
+        // detection fopen() churn that fragmented the heap until malloc failed.
+        scanner.sessionTick(tick_ms);
+        scanner.csvLogTick(tick_ms);
 
         // --- SD card logging flush ---
         // Periodically write the accumulated buffer to /sdcard/detections.csv.

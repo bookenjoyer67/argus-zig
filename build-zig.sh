@@ -64,6 +64,7 @@ pub const alert = impl.alert;
 pub const alertKind = impl.alertKind;
 pub const storageAppend = impl.storageAppend;
 pub const storageRead = impl.storageRead;
+pub const has_storage = impl.has_storage;
 pub const ui = impl.ui;
 EOF
 

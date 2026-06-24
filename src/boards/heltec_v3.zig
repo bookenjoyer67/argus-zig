@@ -41,6 +41,10 @@ pub fn alertKind(kind: display.TrackerType, score: u8) void {
     _ = score;
 }
 
+/// No microSD on the Heltec — storage hooks are no-ops; the SD log buffer
+/// is sized to 0 and its handlers compile out (see main.zig sdLog*).
+pub const has_storage: bool = false;
+
 /// Storage append — no-op on Heltec (no SD card).
 pub fn storageAppend(path: [*:0]const u8, line: [*:0]const u8) i32 {
     _ = path;

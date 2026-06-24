@@ -608,11 +608,30 @@ pub fn countByKind() KindCounts {
 /// Saved to /spiffs/session.dat and restored on boot.
 pub var session_total: u32 = 0;
 
-/// Persist session counter to SPIFFS.
+/// Session save cadence — matches the SD-log flush interval. saveSession()
+/// only marks the counter dirty; sessionTick() does the actual SPIFFS write
+/// at most once per SESSION_SAVE_MS. Per-detection fopen("w") (overwrite) was
+/// the primary heap-fragmentation crash trigger under heavy BLE/WiFi load.
+const SESSION_SAVE_MS: u32 = 30000;
+var session_dirty: bool = false;
+var session_last_save_ms: u32 = 0;
+
+/// Mark the session counter dirty (called per detection). The actual SPIFFS
+/// write is deferred to sessionTick() to avoid heap-thrashing fopen churn.
 pub fn saveSession() void {
-    var buf: [16]u8 = undefined;
-    const s = std.fmt.bufPrint(&buf, "{d}", .{session_total}) catch return;
-    _ = main.spiffs_write_file("session.dat", s.ptr, s.len);
+    session_dirty = true;
+}
+
+/// Write the session counter to SPIFFS if dirty and the save interval elapsed.
+/// Called once per main-loop iteration.
+pub fn sessionTick(now: u32) void {
+    if (session_dirty and (now -% session_last_save_ms) >= SESSION_SAVE_MS) {
+        var buf: [16]u8 = undefined;
+        const s = std.fmt.bufPrint(&buf, "{d}", .{session_total}) catch return;
+        _ = main.spiffs_write_file("session.dat", s.ptr, s.len);
+        session_dirty = false;
+        session_last_save_ms = now;
+    }
 }
 
 /// Restore session counter from SPIFFS on boot.
@@ -795,8 +814,55 @@ pub fn parseNmeaCoord(raw: []const u8, dir: []const u8) i32 {
 // ================================================================
 // CSV DETECTION LOG
 // ================================================================
+//
+// Detection events are batched in a RAM buffer and flushed to SPIFFS in a
+// single fopen("a") per CSV_FLUSH_LINES lines or CSV_FLUSH_MS — mirroring the
+// SD-log path in main.zig. Per-detection fopen("a") was a primary heap-
+// fragmentation crash trigger under heavy BLE/WiFi load.
 
-/// Append a detection event to the CSV log.
+const CSV_LOG_BUF_SIZE = 4096;
+const CSV_FLUSH_LINES: u8 = 64;
+const CSV_FLUSH_MS: u32 = 30000;
+
+var csv_log_buf: [CSV_LOG_BUF_SIZE]u8 = undefined;
+var csv_log_len: u16 = 0;
+var csv_log_lines: u8 = 0;
+var csv_last_flush_ms: u32 = 0;
+
+/// Append a formatted CSV line (no newline) to the in-memory buffer; flush if full.
+fn csvAppend(line: []const u8) void {
+    if (csv_log_len + line.len + 2 > CSV_LOG_BUF_SIZE) {
+        csvLogFlush();
+    }
+    if (line.len > 0 and csv_log_len + line.len + 2 <= CSV_LOG_BUF_SIZE) {
+        @memcpy(csv_log_buf[csv_log_len..][0..line.len], line);
+        csv_log_len += @intCast(line.len);
+        csv_log_buf[csv_log_len] = '\n';
+        csv_log_len += 1;
+        csv_log_lines += 1;
+    }
+}
+
+/// Flush the accumulated CSV buffer to SPIFFS in a single fopen("a").
+/// Also called before serial CSV export so buffered lines aren't lost.
+pub fn csvLogFlush() void {
+    if (csv_log_len == 0) return;
+    csv_log_buf[csv_log_len] = 0;
+    _ = main.spiffs_append_line("detections.csv", @ptrCast(&csv_log_buf));
+    csv_log_len = 0;
+    csv_log_lines = 0;
+}
+
+/// Flush the CSV buffer if the line count or time interval is reached.
+/// Called once per main-loop iteration.
+pub fn csvLogTick(now: u32) void {
+    if (csv_log_lines >= CSV_FLUSH_LINES or (now -% csv_last_flush_ms) >= CSV_FLUSH_MS) {
+        csvLogFlush();
+        csv_last_flush_ms = now;
+    }
+}
+
+/// Format a detection event and buffer it for the CSV log.
 /// Looks up the tracker entry to get the accumulated score.
 pub fn logCsv(mac: [6]u8, rssi: i8) void {
     // Find the tracker entry for this MAC to get accumulated score
@@ -810,13 +876,12 @@ pub fn logCsv(mac: [6]u8, rssi: i8) void {
             if (methods == 0) return;
 
             var line: [110]u8 = undefined;
-            const s = std.fmt.bufPrint(&line, "{d},{s},{X:0>2}{X:0>2}{X:0>2}{X:0>2}{X:0>2}{X:0>2},{d},{d},{d},{d},{X:0>2}\n", .{
+            const s = std.fmt.bufPrint(&line, "{d},{s},{X:0>2}{X:0>2}{X:0>2}{X:0>2}{X:0>2}{X:0>2},{d},{d},{d},{d},{X:0>2}", .{
                 main.tick_ms, ks,
                 mac[0], mac[1], mac[2], mac[3], mac[4], mac[5],
                 rssi, score, gps_lat, gps_lon, methods,
             }) catch return;
-            line[s.len] = 0; // null-terminate for C
-            _ = main.spiffs_append_line("detections.csv", line[0..s.len :0].ptr);
+            csvAppend(s);
             return;
         }
     }

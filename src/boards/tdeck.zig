@@ -152,6 +152,9 @@ pub fn alertKind(kind: display.TrackerType, score: u8) void {
     }
 }
 
+/// The T-Deck has a microSD slot — continuous CSV logging is enabled.
+pub const has_storage: bool = true;
+
 /// Append a line to microSD (FATFS). Returns 0 on success, negative on error.
 pub fn storageAppend(path: [*:0]const u8, line: [*:0]const u8) i32 {
     return sd_append_line(path, line);
