@@ -59,7 +59,7 @@ pub const analysis = @import("analysis.zig");
 
 /// Single source of truth for the firmware version (shown on the OLED System
 /// page and reported by the JSON API). Bump this on each release.
-pub const FIRMWARE_VERSION = "1.3.0";
+pub const FIRMWARE_VERSION = "1.3.1";
 
 /// C-accessible firmware version for SPIFFS config/session version checks.
 pub export const firmware_version_c: [*:0]const u8 = FIRMWARE_VERSION;
@@ -411,7 +411,7 @@ pub const TrackerEntry = struct {
     rssi: i8,
     last_seen: u32,
     score: u8,              // 0-100 confidence score
-    methods: u16,            // bitmask of detection methods
+    methods: u32,            // bitmask of detection methods
     rssi_history: [5]i8,     // recent RSSI values (ring buffer)
     rssi_hidx: u3,           // write index into rssi_history
     source: u8,              // 0 = direct (this unit), 1 = mesh (peer-relayed)
@@ -510,11 +510,11 @@ pub fn sdLogFlush() void {
 }
 
 /// Format a CSV line and push to the SD log buffer.
-fn sdLogCsvLine(mac: [6]u8, kind: display.TrackerType, rssi: i8, score: u8, methods: u16) void {
+fn sdLogCsvLine(mac: [6]u8, kind: display.TrackerType, rssi: i8, score: u8, methods: u32) void {
     if (comptime !board.has_storage) return;
     var line: [120]u8 = undefined;
     const ks = display.kindStr(kind);
-    const s = std.fmt.bufPrint(&line, "{d},{s},{X:0>2}{X:0>2}{X:0>2}{X:0>2}{X:0>2}{X:0>2},{d},{d},{d},{d},{X:0>2}", .{
+    const s = std.fmt.bufPrint(&line, "{d},{s},{X:0>2}{X:0>2}{X:0>2}{X:0>2}{X:0>2}{X:0>2},{d},{d},{d},{d},{X:0>4}", .{
         tick_ms, ks,
         mac[0], mac[1], mac[2], mac[3], mac[4], mac[5],
         rssi, score, scanner.gps_lat, scanner.gps_lon, methods,
@@ -1138,6 +1138,15 @@ export fn zig_main() callconv(.c) void {
             // Skip unknown MACs — only track OUI matches or "Flock" SSIDs.
             // This avoids flooding the tracker table with every passing phone.
             var result = scanner.classifyWiFi(wifi_addr, wifi_ssid[0..wifi_ssid_len]);
+            // Flock-You's key insight: also check addr1 (destination/receiver).
+            // A sleeping Flock camera appears as the destination of probe
+            // responses from nearby APs. Checking only addr2 (transmitter)
+            // misses cameras that are receiving but not transmitting.
+            if (result.kind == .unknown and scanner.matchOui(wifi_receiver)) {
+                result = scanner.classifyWiFi(wifi_receiver, wifi_ssid[0..wifi_ssid_len]);
+            } else if (result.kind != .unknown and scanner.matchOui(wifi_receiver)) {
+                result.methods |= scanner.METHOD_OUI;
+            }
             if (wifi_rid_len > 0) {
                 const rid_methods = scanner.parseDroneRemoteId(wifi_rid_buf[0..wifi_rid_len]);
                 if (rid_methods != 0) {

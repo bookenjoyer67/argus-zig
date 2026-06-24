@@ -111,7 +111,7 @@ fn formatMac(mac: [6]u8, buf: []u8) []const u8 {
 }
 
 /// Raven firmware version string from methods flags.
-fn ravenFwStr(methods: u16) []const u8 {
+fn ravenFwStr(methods: u32) []const u8 {
     if (methods & scanner.RAVEN_FW_1_3 != 0) return "v1.3";
     if (methods & scanner.RAVEN_FW_1_2 != 0) return "v1.2";
     if (methods & scanner.RAVEN_FW_1_1 != 0) return "v1.1";

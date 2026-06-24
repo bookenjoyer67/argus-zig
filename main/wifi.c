@@ -23,7 +23,7 @@ struct wifi_scan_result {
     uint8_t receiver[6];   // receiver MAC (addr1)
     int8_t rssi;
     uint8_t channel;
-    uint8_t frame_type;    // 0=mgmt, 2=data
+    uint8_t frame_type;    // hi nibble=type (0=mgmt,2=data), lo nibble=subtype (4=probe_req)
     uint8_t ssid_len;
     uint8_t ssid[32];
     uint8_t rid_len;       // Remote ID payload length (tag 221 ASTM)
@@ -61,7 +61,8 @@ static void wifi_sniffer_cb(void *buf, wifi_promiscuous_pkt_type_t type) {
 
     // 802.11 Frame Control field (first 2 bytes)
     uint16_t frame_ctrl = frame[0] | (frame[1] << 8);
-    uint8_t fc_type = (frame_ctrl >> 2) & 0x03;   // bits 2-3
+    uint8_t fc_type = (frame_ctrl >> 2) & 0x03;      // bits 2-3
+    uint8_t fc_subtype = (frame_ctrl >> 4) & 0x0F; // bits 4-7
 
     struct wifi_scan_result r;
     memset(&r, 0, sizeof(r));
@@ -70,8 +71,9 @@ static void wifi_sniffer_cb(void *buf, wifi_promiscuous_pkt_type_t type) {
     memcpy(r.receiver, frame + 4, 6);
     memcpy(r.addr, frame + 10, 6);
     r.rssi = pkt->rx_ctrl.rssi;
+    if (r.rssi < -95) return;   // drop noise frames below RSSI floor
     r.channel = pkt->rx_ctrl.channel;
-    r.frame_type = fc_type;
+    r.frame_type = (fc_type << 4) | fc_subtype;
     r.ssid_len = 0;
 
     // Filter out multicast/broadcast transmitters (addr2 byte 0, bit 0 = group)
@@ -94,7 +96,7 @@ static void wifi_sniffer_cb(void *buf, wifi_promiscuous_pkt_type_t type) {
             pos += 2;
             if (pos + ie_len > body_len) break;
 
-            if (ie_tag == 0x00 && ie_len > 0 && ie_len <= 32) {
+            if (ie_tag == 0x00 && ie_len <= 32) {
                 r.ssid_len = ie_len;
                 memcpy(r.ssid, body + pos, ie_len);
             }
@@ -111,6 +113,25 @@ static void wifi_sniffer_cb(void *buf, wifi_promiscuous_pkt_type_t type) {
                 }
             }
             pos += ie_len;
+        }
+
+        // FCS trailer retry: some ESP32 driver versions include the 4-byte FCS
+        // trailer in sig_len, shifting IEs by 4 bytes. Retry with body_len-4.
+        if (r.ssid_len == 0 && body_len > 4) {
+            uint16_t pos2 = 0;
+            uint16_t retry_len = body_len - 4;
+            while (pos2 + 2 <= retry_len) {
+                uint8_t ie_tag = body[pos2];
+                uint8_t ie_len = body[pos2 + 1];
+                pos2 += 2;
+                if (pos2 + ie_len > retry_len) break;
+                if (ie_tag == 0x00 && ie_len <= 32) {
+                    r.ssid_len = ie_len;
+                    memcpy(r.ssid, body + pos2, ie_len);
+                    break;
+                }
+                pos2 += ie_len;
+            }
         }
     }
 

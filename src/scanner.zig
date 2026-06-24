@@ -25,23 +25,24 @@ const display = @import("display.zig");
 // Add new methods here, then add entries to BLE_SIGNATURES below.
 
 /// Detection method flags (bitmask) — each method contributes to confidence score.
-pub const METHOD_OUI: u16         = 1 << 0; // MAC OUI match (40 pts)
-pub const METHOD_SSID_PREFIX: u16 = 1 << 1; // SSID starts with "Flock" (50 pts)
-pub const METHOD_SSID_FLOCK: u16  = 1 << 2; // SSID "Flock-XXXX" full format (65 pts)
-pub const METHOD_BLE_NAME: u16    = 1 << 3; // BLE advert contains device name (45 pts)
-pub const METHOD_MANUF: u16       = 1 << 4; // Manufacturer 0x09C8 / 0x0075 (60 pts)
-pub const METHOD_FINDMY: u16      = 1 << 5; // Apple Find My 0x4C00+type 0x12 (70 pts)
-pub const METHOD_RAVEN: u16       = 1 << 6; // Raven gunshot sensor UUID (70 pts)
-pub const METHOD_TILE: u16        = 1 << 7; // Tile 0xFEED service UUID (45 pts)
-pub const METHOD_DRONE: u16       = 1 << 8; // Drone Remote ID (BLE 0xFFFA or OUI) (60 pts)
+pub const METHOD_OUI: u32         = 1 << 0; // MAC OUI match (40 pts)
+pub const METHOD_SSID_PREFIX: u32 = 1 << 1; // SSID starts with "Flock" (50 pts)
+pub const METHOD_SSID_FLOCK: u32  = 1 << 2; // SSID "Flock-XXXX" full format (65 pts)
+pub const METHOD_BLE_NAME: u32    = 1 << 3; // BLE advert contains device name (45 pts)
+pub const METHOD_MANUF: u32       = 1 << 4; // Manufacturer 0x09C8 / 0x0075 (60 pts)
+pub const METHOD_FINDMY: u32      = 1 << 5; // Apple Find My 0x4C00+type 0x12 (70 pts)
+pub const METHOD_RAVEN: u32       = 1 << 6; // Raven gunshot sensor UUID (70 pts)
+pub const METHOD_TILE: u32        = 1 << 7; // Tile 0xFEED service UUID (45 pts)
+pub const METHOD_DRONE: u32       = 1 << 8; // Drone Remote ID (BLE 0xFFFA or OUI) (60 pts)
 // Raven firmware version flags (encoded in methods for display)
-pub const RAVEN_FW_1_1: u16      = 1 << 9;  // Legacy — UUIDs 0x1809/0x1819
-pub const RAVEN_FW_1_2: u16      = 1 << 10; // UUIDs 0x31xx/0x32xx/0x3300
-pub const RAVEN_FW_1_3: u16      = 1 << 11; // UUIDs 0x34xx/0x3500
-pub const METHOD_CAM_SSID: u16   = 1 << 12; // SSID contains camera keyword (30 pts)
-pub const METHOD_SIDEWALK: u16    = 1 << 13; // Amazon Sidewalk device (50 pts)
-pub const METHOD_WIFI_DRONE: u16  = 1 << 14; // WiFi Remote ID tag 221 (85 pts)
-pub const METHOD_RAVEN_LOW: u16   = 1 << 15; // Raven 1 UUID — possible, lower confidence (40 pts)
+pub const RAVEN_FW_1_1: u32      = 1 << 9;  // Legacy — UUIDs 0x1809/0x1819
+pub const RAVEN_FW_1_2: u32      = 1 << 10; // UUIDs 0x31xx/0x32xx/0x3300
+pub const RAVEN_FW_1_3: u32      = 1 << 11; // UUIDs 0x34xx/0x3500
+pub const METHOD_CAM_SSID: u32   = 1 << 12; // SSID contains camera keyword (30 pts)
+pub const METHOD_SIDEWALK: u32    = 1 << 13; // Amazon Sidewalk device (50 pts)
+pub const METHOD_WIFI_DRONE: u32  = 1 << 14; // WiFi Remote ID tag 221 (85 pts)
+pub const METHOD_RAVEN_LOW: u32   = 1 << 15; // Raven 1 UUID — possible, lower confidence (40 pts)
+pub const METHOD_WILDCARD_PROBE: u32 = 1 << 16; // Wildcard probe (SSID len 0) from known OUI (65 pts)
 
 /// Carrier probe request counter — SSIDs like "attwifi", "VerizonWiFi", etc.
 /// A spike in these from different MACs can indicate an IMSI catcher (Stingray)
@@ -106,7 +107,7 @@ const BleSignature = struct {
     company_id: ?u16,
     service_uuids: []const u16,
     tracker_type: display.TrackerType,
-    method: u16,
+    method: u32,
 };
 
 const BLE_SIGNATURES = [_]BleSignature{
@@ -128,7 +129,7 @@ const BLE_SIGNATURES = [_]BleSignature{
 
 pub const ClassResult = struct {
     kind: display.TrackerType,
-    methods: u16,
+    methods: u32,
 };
 
 /// Confidence score thresholds — configurable constants.
@@ -138,7 +139,7 @@ pub const SCORE_CERT: u8 = 85;
 
 /// Compute confidence score from method flags, RSSI, and MAC type.
 /// Bonuses: multi-method corroboration, strong signal, static address.
-pub fn computeScore(methods: u16, rssi: i8, mac: [6]u8) u8 {
+pub fn computeScore(methods: u32, rssi: i8, mac: [6]u8) u8 {
     var score: u32 = 0;
     var count: u32 = 0;
 
@@ -154,6 +155,7 @@ pub fn computeScore(methods: u16, rssi: i8, mac: [6]u8) u8 {
     if (methods & METHOD_DRONE != 0)       { score += 60; count += 1; }
     if (methods & METHOD_SIDEWALK != 0)    { score += 50; count += 1; }
     if (methods & METHOD_WIFI_DRONE != 0)  { score += 85; count += 1; }
+    if (methods & METHOD_WILDCARD_PROBE != 0) { score += 65; count += 1; }
 
     if (count >= 2) score += 20;     // multi-method corroboration
     if (rssi > -50) score += 10;     // strong signal
@@ -173,7 +175,8 @@ pub fn computeScore(methods: u16, rssi: i8, mac: [6]u8) u8 {
         (methods & METHOD_SSID_PREFIX == 0) and
         (methods & METHOD_SSID_FLOCK == 0) and
         (methods & METHOD_CAM_SSID == 0) and
-        (methods & METHOD_WIFI_DRONE == 0))
+        (methods & METHOD_WIFI_DRONE == 0) and
+        (methods & METHOD_WILDCARD_PROBE == 0))
     {
         if (score > 25) score = 25;
     }
@@ -189,7 +192,7 @@ pub fn computeScore(methods: u16, rssi: i8, mac: [6]u8) u8 {
 /// Iterates the BLE_SIGNATURES table for manufacturer/service UUID matches.
 /// Raven detection has special multi-UUID counting for firmware classification.
 pub fn classifyBle(adv_data: []const u8) ClassResult {
-    var methods: u16 = 0;
+    var methods: u32 = 0;
     var kind: display.TrackerType = .unknown;
     var raven_uuids: u8 = 0;
     var raven_fw_major: u8 = 0;
@@ -288,24 +291,23 @@ pub fn classifyBle(adv_data: []const u8) ClassResult {
 /// Classify a WiFi detection based on OUI match and SSID pattern.
 pub fn classifyWiFi(mac: [6]u8, ssid: []const u8) ClassResult {
     const oui_match = matchOui(mac);
-    var methods: u16 = 0;
+    var methods: u32 = 0;
     var kind: display.TrackerType = .unknown;
 
     if (oui_match) methods |= METHOD_OUI;
 
-    // Camera SSID keywords — case-insensitive match
+    // Wildcard probe: SSID tag with length 0 means the device is scanning
+    // for any network — this is the Flock camera signature when from a known OUI.
+    if (ssid.len == 0 and oui_match) {
+        methods |= METHOD_WILDCARD_PROBE;
+    }
+
+    // Camera SSID keywords — case-insensitive substring match
     const cam_keywords = [_][]const u8{ "hikvision", "dahua", "reolink", "camera", "cam_", "amcrest", "ring" };
     for (cam_keywords) |kw| {
-        if (ssid.len >= kw.len) {
-            var match = true;
-            for (kw, 0..) |kc, ki| {
-                const sc = std.ascii.toLower(ssid[ki]);
-                if (sc != std.ascii.toLower(kc)) { match = false; break; }
-            }
-            if (match) {
-                methods |= METHOD_CAM_SSID;
-                break;
-            }
+        if (std.ascii.indexOfIgnoreCase(ssid, kw) != null) {
+            methods |= METHOD_CAM_SSID;
+            break;
         }
     }
 
@@ -314,36 +316,29 @@ pub fn classifyWiFi(mac: [6]u8, ssid: []const u8) ClassResult {
     // doesn't inflate the burst counter.
     const carrier_ssids = [_][]const u8{ "attwifi", "VerizonWiFi", "xfinitywifi", "T-Mobile", "vodafone", "EE WiFi", "Orange", "o2wifi" };
     for (carrier_ssids) |cs| {
-        if (ssid.len >= cs.len) {
-            var match = true;
-            for (cs, 0..) |kc, ki| {
-                const sc = std.ascii.toLower(ssid[ki]);
-                if (sc != std.ascii.toLower(kc)) { match = false; break; }
-            }
-            if (match) {
-                // Check dedup — have we seen this MAC recently?
-                var seen_recently = false;
-                for (0..carrier_dedup_count) |i| {
-                    if (std.mem.eql(u8, &carrier_dedup_macs[i], &mac)) {
-                        if ((main.tick_ms -% carrier_dedup_ts[i]) < CARRIER_DEDUP_MS) {
-                            seen_recently = true;
-                        } else {
-                            carrier_dedup_ts[i] = main.tick_ms;
-                        }
-                        break;
+        if (std.ascii.indexOfIgnoreCase(ssid, cs) != null) {
+            // Check dedup — have we seen this MAC recently?
+            var seen_recently = false;
+            for (0..carrier_dedup_count) |i| {
+                if (std.mem.eql(u8, &carrier_dedup_macs[i], &mac)) {
+                    if ((main.tick_ms -% carrier_dedup_ts[i]) < CARRIER_DEDUP_MS) {
+                        seen_recently = true;
+                    } else {
+                        carrier_dedup_ts[i] = main.tick_ms;
                     }
+                    break;
                 }
-                if (!seen_recently) {
-                    if (carrier_dedup_count < CARRIER_DEDUP_SLOTS) {
-                        @memcpy(&carrier_dedup_macs[carrier_dedup_count], &mac);
-                        carrier_dedup_ts[carrier_dedup_count] = main.tick_ms;
-                        carrier_dedup_count += 1;
-                    }
-                    carrier_probes += 1;
-                    burst_recent_count += 1;
-                }
-                break;
             }
+            if (!seen_recently) {
+                if (carrier_dedup_count < CARRIER_DEDUP_SLOTS) {
+                    @memcpy(&carrier_dedup_macs[carrier_dedup_count], &mac);
+                    carrier_dedup_ts[carrier_dedup_count] = main.tick_ms;
+                    carrier_dedup_count += 1;
+                }
+                carrier_probes += 1;
+                burst_recent_count += 1;
+            }
+            break;
         }
     }
 
@@ -367,6 +362,9 @@ pub fn classifyWiFi(mac: [6]u8, ssid: []const u8) ClassResult {
     if (methods & METHOD_SSID_PREFIX != 0) {
         // A "Flock-XXXX" SSID is the reliable Flock signal — classify it
         // regardless of OUI (the OUIs are commodity modules, not Flock-owned).
+        kind = .flock_camera;
+    } else if (methods & METHOD_WILDCARD_PROBE != 0) {
+        // Wildcard probe (SSID len 0) from known OUI — Flock camera signature
         kind = .flock_camera;
     } else if (oui_match and (methods & METHOD_CAM_SSID != 0)) {
         kind = .camera;
@@ -926,7 +924,7 @@ pub fn logCsv(mac: [6]u8, rssi: i8) void {
             if (methods == 0) return;
 
             var line: [110]u8 = undefined;
-            const s = std.fmt.bufPrint(&line, "{d},{s},{X:0>2}{X:0>2}{X:0>2}{X:0>2}{X:0>2}{X:0>2},{d},{d},{d},{d},{X:0>2}", .{
+            const s = std.fmt.bufPrint(&line, "{d},{s},{X:0>2}{X:0>2}{X:0>2}{X:0>2}{X:0>2}{X:0>2},{d},{d},{d},{d},{X:0>4}", .{
                 main.tick_ms, ks,
                 mac[0], mac[1], mac[2], mac[3], mac[4], mac[5],
                 rssi, score, gps_lat, gps_lon, methods,

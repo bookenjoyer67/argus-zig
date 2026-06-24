@@ -77,10 +77,10 @@ fn levelName(score: u8) []const u8 {
 }
 
 /// Append a '+'-joined list of the primary detection-method names.
-fn addMethods(b: *Buf, methods: u16) void {
+fn addMethods(b: *Buf, methods: u32) void {
     b.add("\"", .{});
     var first = true;
-    const Pair = struct { flag: u16, name: []const u8 };
+    const Pair = struct { flag: u32, name: []const u8 };
     const map = [_]Pair{
         .{ .flag = scanner.METHOD_OUI, .name = "oui" },
         .{ .flag = scanner.METHOD_SSID_PREFIX, .name = "ssid" },
@@ -94,6 +94,7 @@ fn addMethods(b: *Buf, methods: u16) void {
         .{ .flag = scanner.METHOD_SIDEWALK, .name = "sidewalk" },
         .{ .flag = scanner.METHOD_WIFI_DRONE, .name = "wifi_drone" },
         .{ .flag = scanner.METHOD_CAM_SSID, .name = "cam" },
+        .{ .flag = scanner.METHOD_WILDCARD_PROBE, .name = "wildcard" },
     };
     for (map) |m| {
         if (methods & m.flag != 0) {
