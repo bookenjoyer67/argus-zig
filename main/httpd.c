@@ -24,6 +24,9 @@
 extern const char setup_html_start[]     asm("_binary_setup_html_start");
 extern const char dashboard_html_start[] asm("_binary_dashboard_html_start");
 
+// Zig CSV flush — flush buffered log lines before HTTP file export
+extern void csv_log_flush(void);
+
 // JSON renderers implemented in Zig (src/api.zig). Each writes into buf
 // and returns the number of bytes written.
 extern uint32_t zig_api_status(uint8_t *buf, uint32_t max);
@@ -211,6 +214,7 @@ static esp_err_t h_ota(httpd_req_t *req) {
 }
 
 static esp_err_t h_export_csv(httpd_req_t *req) {
+    csv_log_flush(); // flush buffered lines before reading file
     httpd_resp_set_type(req, "text/csv");
     httpd_resp_set_hdr(req, "Content-Disposition",
                        "attachment; filename=\"argus-detections.csv\"");

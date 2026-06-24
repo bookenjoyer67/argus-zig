@@ -26,6 +26,10 @@
 extern int spiffs_read_file(const char *path, uint8_t *buf, size_t max_len);
 extern int spiffs_write_file(const char *path, const uint8_t *data, size_t len);
 
+// Firmware version — defined in src/main.zig, exported as a C symbol.
+// Used to version-check persisted config and session data.
+extern const char firmware_version_c[];
+
 #define CONFIG_PATH "config.txt"
 #define CONFIG_MAX  512
 
@@ -61,9 +65,15 @@ int config_get(const char *key, char *out, int out_len) {
     return -1;
 }
 
-// Returns 1 when onboarding has completed, 0 otherwise.
+// Returns 1 when onboarding has completed and the firmware version matches, 0 otherwise.
+// If the version doesn't match, the config is stale — return 0 so the device
+// re-onboards (or the Zig side can handle it gracefully).
 int config_is_configured(void) {
     char v[8];
+    char fw[16];
+    // Check firmware version guard first.
+    if (config_get("v", fw, sizeof(fw)) < 0) return 0; // no version — stale config
+    if (strncmp(fw, firmware_version_c, sizeof(fw)) != 0) return 0; // version mismatch
     if (config_get("configured", v, sizeof(v)) < 0) return 0;
     return (v[0] == '1') ? 1 : 0;
 }
@@ -77,12 +87,14 @@ int config_role_is_base(void) {
 
 // Persist a complete configuration and mark the device configured.
 // Returns 0 on success, negative on error.
+// Prepends a version marker (v=<firmware_version>) for forward-compat checks.
 int config_set_all(const char *name, const char *role,
                    const char *ssid, const char *pass,
                    const char *lat, const char *lon) {
     char buf[CONFIG_MAX];
     int len = snprintf(buf, sizeof(buf),
-                       "configured=1\nname=%s\nrole=%s\nssid=%s\npass=%s\nlat=%s\nlon=%s\n",
+                       "v=%s\nconfigured=1\nname=%s\nrole=%s\nssid=%s\npass=%s\nlat=%s\nlon=%s\n",
+                       firmware_version_c,
                        name ? name : "",
                        role ? role : "mobile",
                        ssid ? ssid : "",

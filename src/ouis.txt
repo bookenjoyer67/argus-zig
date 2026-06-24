@@ -124,3 +124,62 @@ b8:a4:4f
 00:1f:54
 # Uniview (58:e8:76 is an IEEE Registration Authority shared block)
 58:e8:76
+
+# Police / Municipal Networking Gear (LTE routers, vehicle APs) — commodity
+# Verified against IEEE OUI registry 2025-06-24.
+# Cradlepoint
+00:30:44
+00:E0:1C
+0C:1C:20
+# Peplink
+D4:13:F8
+00:11:6E
+10:56:CA
+00:30:1A
+# Sierra Wireless (AirLink mobile routers)
+50:13:9D
+84:DB:2F
+64:CE:6E
+AC:3A:7A
+# Digi International (Digi Transport)
+64:64:4B
+# Teltonika Networks (RUT series — common in EU police vehicles)
+B4:1C:AF
+20:97:27
+38:8A:21
+7C:D9:F4
+
+# Police Computing — commodity (rugged laptops, mobile data terminals)
+# Panasonic (Toughbook / Toughpad)
+00:1B:D3
+CC:7E:E7
+20:C6:EB
+BC:C3:42
+08:00:23
+B8:20:8E
+# Motorola Solutions (MW810 / ML910 mobile workstations, APX radios)
+00:04:7D
+00:1F:92
+4C:CC:34
+00:18:85
+# Getac — no IEEE OUI registered; uses Intel/Qualcomm commodity WiFi modules.
+# Detectable via SSID patterns or surrounding equipment, not OUI.
+
+# Police Body Cameras & In-Car Video — commodity
+# Axon Enterprise (Body 2/3/4, Fleet 2/3 in-car)
+00:25:DF
+# WatchGuard Video (Vista / 4RE in-car systems)
+00:1D:96
+
+# Police ALPR (Automatic License Plate Recognition) — commodity
+# Genetec (AutoVu ALPR — patrol-car and fixed-site)
+0C:BF:15
+# Motorola Vigilant — uses Motorola Solutions OUI above (shares parent company).
+# ELSAG — no IEEE OUI registered (Leeds-ALPR brand, uses commodity modems).
+
+# Police Radar — commodity
+# Decatur Electronics (Genesis series radar)
+6C:18:11
+# Stalker Radar, Kustom Signals, MPH Industries — no IEEE OUI registered.
+# These companies do not manufacture WiFi/BLE chips. Their radar units may
+# have Bluetooth for data export (unverified — needs field capture).

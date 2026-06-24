@@ -25,6 +25,7 @@
 #include "nvs_flash.h"
 #include "esp_system.h"
 #include "driver/i2c.h"
+#include "esp_heap_caps.h"
 
 // Defined in Zig (src/main.zig), compiled into libargus.a
 extern void zig_main(void);
@@ -372,4 +373,11 @@ void app_main(void) {
 
     // unreachable
     printf("Argus Zig — zig_main returned (should not happen)\n");
+}
+
+// ================================================================
+// Free heap telemetry — returns free internal DRAM in KB
+// ================================================================
+int free_heap_kb(void) {
+    return (int)(esp_get_free_heap_size() / 1024);
 }

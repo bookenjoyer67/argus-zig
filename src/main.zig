@@ -55,10 +55,14 @@ pub const scanner = @import("scanner.zig");
 pub const mesh = @import("mesh.zig");
 pub const config = @import("config.zig");
 pub const api = @import("api.zig");
+pub const analysis = @import("analysis.zig");
 
 /// Single source of truth for the firmware version (shown on the OLED System
 /// page and reported by the JSON API). Bump this on each release.
-pub const FIRMWARE_VERSION = "1.2.3";
+pub const FIRMWARE_VERSION = "1.3.0";
+
+/// C-accessible firmware version for SPIFFS config/session version checks.
+pub export const firmware_version_c: [*:0]const u8 = FIRMWARE_VERSION;
 
 // Force the dashboard API exports (in the non-root api.zig) to be analyzed
 // and emitted into libargus.a — Zig only lazily analyzes imported files.
@@ -136,6 +140,9 @@ pub extern fn ble_gatt_get_request(out: [*]u8, max: i32) i32;
 pub extern fn ble_gatt_take_passkey(out: *u32) i32;
 pub extern fn ble_gatt_set_enabled(on: i32) i32;
 
+// BLE ring buffer drop counter
+pub extern fn ble_scan_dropped() u32;
+
 // OTA progress (main/ota.c) — drives the OLED update screen.
 pub extern fn ota_is_active() i32;
 pub extern fn ota_progress_pct() i32;
@@ -170,8 +177,14 @@ pub extern fn spiffs_write_file(path: [*:0]const u8, data: [*]const u8, len: u32
 // Dump CSV log to serial (called on long press). Entirely in C — see spiffs.c.
 pub extern fn spiffs_csv_export() void;
 
+// Free heap telemetry — C wrapper in main/main.c
+pub extern fn free_heap_kb() i32;
+
 // Delete detections.csv to start fresh.
 pub extern fn spiffs_clear_csv() i32;
+
+// Rotate CSV log when it exceeds 512 KB (renames to .1.csv, .2.csv).
+pub extern fn spiffs_csv_rotate() i32;
 
 // LoRa SX1262 — mesh networking on 915 MHz
 // lora_send: TX a packet (max 255 bytes), blocks until done.
@@ -237,7 +250,7 @@ pub extern fn gps_read(buf: [*]u8, max_len: i32) i32;
 ///
 /// This avoids the comptime-reference-escape problem in Zig 0.16:
 /// comptime blocks can't return slices pointing to comptime memory.
-const OUI_MAX = 96;
+const OUI_MAX = 128;
 pub const KNOWN_OUIS_COUNT: usize = blk: {
     @setEvalBranchQuota(20000);
     const raw = @embedFile("ouis.txt");
@@ -600,6 +613,22 @@ pub var label_view_kind: u8 = 0; // 1 = surv view, 5 = devices view (set when en
 /// Settings mode cursor: which config field is highlighted (0-4).
 pub var settings_cursor: u8 = 0;
 
+/// Remove tracker entries not seen in COMPACT_STALE_MS.
+/// Shifts remaining entries down to keep the table dense.
+pub fn compactTrackers() void {
+    const COMPACT_STALE_MS: u32 = 30 * 60 * 1000;
+    var write: usize = 0;
+    for (0..tracker_count) |read| {
+        if ((tick_ms -% trackers[read].last_seen) < COMPACT_STALE_MS) {
+            if (write != read) {
+                trackers[write] = trackers[read];
+            }
+            write += 1;
+        }
+    }
+    tracker_count = write;
+}
+
 /// Mute audio alerts (independent of stealth — display and LED stay active).
 pub var audio_muted: bool = false;
 
@@ -770,7 +799,11 @@ var hopping_enabled: bool = false;
 // then handed to main/ble.c which chunks it into MTU-sized notifications.
 // Each message is one JSON object/array terminated by a newline so the
 // phone client can frame the stream.
-var ble_json_buf: [8192]u8 = undefined;
+var ble_json_buf: [4096]u8 = undefined;
+/// WiFi Remote ID payload buffer — static to reduce main-loop stack pressure.
+var wifi_rid_buf: [128]u8 = undefined;
+/// LoRa receive buffer — static to reduce main-loop stack pressure.
+var lora_recv_buf: [255]u8 = undefined;
 var ble_last_push_ms: u32 = 0;
 
 /// Render a JSON body via one of the api.zig functions and stream it to the
@@ -827,6 +860,14 @@ fn triangleDuty(phase: u32, period: u32, peak: u32) u32 {
 ///   Aware:    slow fade pulse / 2s     (score 40-69)
 ///   Clear:    off
 pub fn updateLed() void {
+    // Heap pressure warning: 3 fast blips every 5s when free heap < 8KB.
+    if (free_heap_kb() < 8) {
+        const p = tick_ms % 5000;
+        const on = (p < 30) or (p >= 100 and p < 130) or (p >= 200 and p < 230);
+        board.led.set(if (on) 255 else 0);
+        return;
+    }
+
     if (init_failed) {
         const p = tick_ms % 1600;
         const on = (p < 60) or (p >= 160 and p < 220) or (p >= 320 and p < 380);
@@ -854,6 +895,17 @@ pub fn updateLed() void {
     }
 
     const level = currentThreatLevel();
+
+    // Deployment alert: slow amber double-pulse when a surveillance
+    // deployment cluster is detected but no specific high-score threat
+    // is active. Distinct from the threat-level patterns below.
+    if (analysis.deployment_alert_active and level < scanner.SCORE_MED) {
+        const p = tick_ms % 3000;
+        const on = (p < 60) or (p >= 400 and p < 460);
+        board.led.set(if (on) LED_PULSE_PEAK else 0);
+        return;
+    }
+
     if (level >= scanner.SCORE_CERT) {
         const p = tick_ms % 200;
         board.led.set(if (p < 100) 255 else 0);
@@ -914,6 +966,7 @@ pub fn dumpCsv(clear: bool) void {
     delayMs(50);
     ledOff();
     scanner.csvLogFlush();
+    analysis.saveDeployCluster();
     spiffs_csv_export();
     if (clear) {
         delayMs(200);
@@ -932,13 +985,30 @@ pub fn dumpCsv(clear: bool) void {
 /// so vTaskDelay is available. No other FreeRTOS tasks are created
 /// yet (BLE scanner will add one later).
 ///
-/// Memory: all globals use static allocation. No heap usage.
-///   trackers:    MAX_TRACKERS * ~40 bytes ≈ 4 KB
-///   oled_buf:    1024 bytes
-///   FONT_5X7:    ~300 bytes (59 chars * 5)
-///   KNOWN_OUIS:  96 * ~30 bytes ≈ 3 KB
-///   stack:       ~4KB default FreeRTOS task stack
-///   Total:       ~12 KB RAM of 512 KB available
+/// Memory budget (ESP32-S3FN8: 512 KB SRAM, no PSRAM):
+///
+///   Static (BSS) — Zig side:
+///     trackers[96]        ~4.0 KB
+///     history[200]        ~2.8 KB
+///     ble_json_buf[8192]   8.0 KB
+///     sd_log_buf (Heltec: 0, T-Deck: 4 KB)
+///     csv_log_buf[4096]    4.0 KB
+///     OUI_DB[128]         ~5.0 KB
+///     gfx framebuffer      ~1.0 KB
+///     analysis similarity   9.0 KB
+///
+///   Static (BSS) — C side:
+///     WiFi ring[128]      ~22.0 KB (main/wifi.c)
+///     BLE ring[64]         ~2.7 KB (main/ble.c)
+///
+///   Stack: FreeRTOS main task 16 KB (CONFIG_ESP_MAIN_TASK_STACK_SIZE)
+///
+///   Heap: newlib FILE buffers during fopen/fclose in SPIFFS/SD paths.
+///         Batched to ≤2 fopen every 30s after dd8c90a — no fragmentation risk.
+///         Internal: ESP-IDF WiFi, NimBLE, lwIP, SPIFFS, HTTP server allocs.
+///
+///   Total static (Zig + C): ~55-60 KB of 512 KB. ~450 KB remaining for
+///   stack + ESP-IDF internal heap + headroom.
 
 export fn zig_main() callconv(.c) void {
     // --- Board bring-up ---
@@ -949,6 +1019,12 @@ export fn zig_main() callconv(.c) void {
 
     // Restore session counter from SPIFFS
     scanner.restoreSession();
+
+    // Restore deployment cluster state from SPIFFS.
+    analysis.restoreDeployCluster();
+
+    // Rotate CSV log if it exceeded 512 KB since last boot.
+    _ = spiffs_csv_rotate();
 
     // Enable WiFi channel hopping on mobile units only. Base units keep the
     // radio on the home-WiFi channel for the dashboard STA link.
@@ -1053,18 +1129,17 @@ export fn zig_main() callconv(.c) void {
         var wifi_frame_type: u8 = undefined;
         var wifi_ssid: [32]u8 = undefined;
         var wifi_ssid_len: u8 = undefined;
-        var wifi_rid: [128]u8 = undefined;
         var wifi_rid_len: u8 = undefined;
 
         poll_count = 0;
-        while (wifi_scan_poll(&wifi_addr, &wifi_receiver, &wifi_rssi, &wifi_channel, &wifi_frame_type, &wifi_ssid, &wifi_ssid_len, &wifi_rid, &wifi_rid_len) != 0) {
+        while (wifi_scan_poll(&wifi_addr, &wifi_receiver, &wifi_rssi, &wifi_channel, &wifi_frame_type, &wifi_ssid, &wifi_ssid_len, &wifi_rid_buf, &wifi_rid_len) != 0) {
             poll_count += 1;
 
             // Skip unknown MACs — only track OUI matches or "Flock" SSIDs.
             // This avoids flooding the tracker table with every passing phone.
             var result = scanner.classifyWiFi(wifi_addr, wifi_ssid[0..wifi_ssid_len]);
             if (wifi_rid_len > 0) {
-                const rid_methods = scanner.parseDroneRemoteId(wifi_rid[0..wifi_rid_len]);
+                const rid_methods = scanner.parseDroneRemoteId(wifi_rid_buf[0..wifi_rid_len]);
                 if (rid_methods != 0) {
                     result.kind = .drone;
                     result.methods |= rid_methods;
@@ -1113,6 +1188,19 @@ export fn zig_main() callconv(.c) void {
                         break;
                     }
                 }
+            }
+        }
+
+        // --- Deployment clustering analysis ---
+        // Runs every ~3s (throttled internally). Scores clusters of
+        // co-located, co-moving devices for surveillance-deployment
+        // patterns. The deployment flag drives the LED, OLED counter,
+        // status JSON, and (for high scores) a rate-limited mesh alert.
+        const depl = analysis.analyzeDeployments(tick_ms);
+        if (depl.active and depl.score >= analysis.DEPLOY_ALERT) {
+            if ((tick_ms -% mesh.last_deploy_ms) >= 5000) {
+                mesh.sendDeployAlert(depl.score, depl.device_count, depl.surv_count, depl.embedded_count);
+                mesh.last_deploy_ms = tick_ms;
             }
         }
 
@@ -1237,10 +1325,9 @@ export fn zig_main() callconv(.c) void {
         // Recovery watchdog: if the radio produces zero IRQ events for ~60s
         // (240 main-loop iterations), it's likely stuck in standby. Force a
         // standby → clear IRQs → set RX recovery sequence.
-        var lora_buf: [255]u8 = undefined;
-        const lora_len = lora_poll_receive(&lora_buf);
+        const lora_len = lora_poll_receive(&lora_recv_buf);
         if (lora_len > 0) {
-            mesh.meshRecv(lora_buf[0..@intCast(lora_len)]);
+            mesh.meshRecv(lora_recv_buf[0..@intCast(lora_len)]);
             lora_silent_iterations = 0;
         } else {
             lora_silent_iterations += 1;
@@ -1284,6 +1371,9 @@ export fn zig_main() callconv(.c) void {
         // --- SD card logging flush ---
         // Periodically write the accumulated buffer to /sdcard/detections.csv.
         sdLogTick(tick_ms);
+
+        // Compact stale tracker entries every 5 minutes.
+        if (tick_ms % 300000 < 10) compactTrackers();
 
         // --- Yield to FreeRTOS ---
         // 10ms sleep lets other tasks run (idle task, WiFi task if enabled).

@@ -337,8 +337,10 @@ int lora_init(void) {
     lora_set_standby(0x01);  // standby with XOSC
     vTaskDelay(pdMS_TO_TICKS(100)); // XOSC startup can take 50-100ms
     {
+#ifdef LORA_DEBUG
         uint8_t mode_after = lora_get_status();
         printf("LoRa: after standby XOSC, chip mode=0x%02X\n", mode_after);
+#endif
     }
     lora_set_packet_type(0x01);      // LoRa mode
     lora_set_freq(LORA_FREQ);
@@ -383,7 +385,9 @@ int lora_send(const uint8_t *data, uint8_t len) {
     if (len > 255) return -1;
     if (!spi) return -2;
 
+#ifdef LORA_DEBUG
     printf("LoRa TX: %dB\n", len);
+#endif
 
     lora_set_standby(0x01);
     vTaskDelay(pdMS_TO_TICKS(10));
@@ -407,18 +411,24 @@ int lora_send(const uint8_t *data, uint8_t len) {
     while (xTaskGetTickCount() < deadline) {
         uint16_t irq = lora_get_irq_status();
         poll_count++;
+#ifdef LORA_DEBUG
         if (poll_count == 1) printf("LoRa TX: irq=0x%04X mode=0x%02X\n", irq, mode_before);
+#endif
         if (irq & IRQ_TX_DONE) {
             lora_clear_irq_status(IRQ_TX_DONE);
             lora_set_rx(LORA_RX_TIMEOUT);
             vTaskDelay(pdMS_TO_TICKS(5));
+#ifdef LORA_DEBUG
             printf("LoRa TX: done after %d polls, rx mode=0x%02X\n", poll_count, lora_get_status());
+#endif
             return 0;
         }
         vTaskDelay(pdMS_TO_TICKS(50));
     }
 
+#ifdef LORA_DEBUG
     printf("LoRa TX: timeout\n");
+#endif
     lora_set_rx(LORA_RX_TIMEOUT);
     return -3;
 }
@@ -436,7 +446,9 @@ int lora_poll_receive(uint8_t *buf) {
         lora_get_rx_buffer_status(&len, &ptr);
         if (len > 0) {
             lora_read_buffer(ptr, buf, len);
+#ifdef LORA_DEBUG
             printf("LoRa RX: %dB\n", len);
+#endif
         }
         lora_set_rx(LORA_RX_TIMEOUT);  // restart RX
         return len;
@@ -444,11 +456,14 @@ int lora_poll_receive(uint8_t *buf) {
 
     if (irq & IRQ_RX_TIMEOUT) {
         lora_clear_irq_status(IRQ_RX_TIMEOUT);
+#ifdef LORA_DEBUG
         printf("LoRa RX: timeout\n");
+#endif
         lora_set_rx(LORA_RX_TIMEOUT);
     }
 
     // Periodic IRQ dump to verify SPI readback is working
+#ifdef LORA_DEBUG
     {
         static int call_count = 0;
         call_count++;
@@ -457,6 +472,7 @@ int lora_poll_receive(uint8_t *buf) {
             printf("LoRa: poll irq=0x%04X mode=0x%02X\n", irq, mode);
         }
     }
+#endif
 
     return 0;
 }
@@ -481,13 +497,17 @@ static void lora_calibrate(void) {
 // failed lora_set_rx() on the TX return path.
 int lora_recover_rx(void) {
     if (!spi) return -1;
+#ifdef LORA_DEBUG
     printf("LoRa: recovery — forcing RX\n");
+#endif
     lora_set_standby(0x01);
     vTaskDelay(pdMS_TO_TICKS(10));
     lora_clear_irq_status(IRQ_TX_DONE);
     vTaskDelay(pdMS_TO_TICKS(10));
     lora_set_rx(LORA_RX_TIMEOUT);
     vTaskDelay(pdMS_TO_TICKS(5));
+#ifdef LORA_DEBUG
     printf("LoRa: recovery done, mode=0x%02X\n", lora_get_status());
+#endif
     return 0;
 }

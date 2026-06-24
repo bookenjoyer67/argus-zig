@@ -64,16 +64,40 @@ pub fn init() void {
     _ = main.oled_i2c_write(0x00, &init_seq, init_seq.len);
 }
 
+var i2c_fail_count: u8 = 0;
+var i2c_reported: bool = false;
+
 /// Transmit the framebuffer over I2C — 8 pages of 128 bytes each.
+/// Tracks I2C failures; on repeated failures triggers board error pattern.
 pub fn update() void {
     var page: u8 = 0;
     while (page < 8) : (page += 1) {
         const cmds = [_]u8{ 0xB0 + page, 0x00, 0x10 };
-        _ = main.oled_i2c_write(0x00, &cmds, cmds.len);
+        if (main.oled_i2c_write(0x00, &cmds, cmds.len) != 0) {
+            i2c_fail_count += 1;
+            if (!i2c_reported) {
+                i2c_reported = true;
+                // First failure — log to serial
+            }
+            if (i2c_fail_count >= 16) {
+                main.init_failed = true;
+            }
+            return;
+        }
 
         const page_start: usize = @as(usize, page) * @as(usize, WIDTH);
-        _ = main.oled_i2c_write(0x40, buf[page_start..][0..WIDTH].ptr, WIDTH);
+        if (main.oled_i2c_write(0x40, buf[page_start..][0..WIDTH].ptr, WIDTH) != 0) {
+            i2c_fail_count += 1;
+            if (!i2c_reported) {
+                i2c_reported = true;
+            }
+            if (i2c_fail_count >= 16) {
+                main.init_failed = true;
+            }
+            return;
+        }
     }
+    if (i2c_fail_count > 0) i2c_fail_count -= 1;
 }
 
 /// Turn the panel off (0xAE) — used by stealth mode. RAM is preserved.

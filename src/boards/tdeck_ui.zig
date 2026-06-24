@@ -9,6 +9,7 @@ const std = @import("std");
 const main = @import("../main.zig");
 const scanner = @import("../scanner.zig");
 const display = @import("../display.zig");
+const analysis = @import("../analysis.zig");
 const config = @import("../config.zig");
 const st7789 = @import("../hal/st7789.zig");
 const g = @import("../hal/gfx.zig").Gfx(st7789);
@@ -27,7 +28,7 @@ const kindStr = display.kindStr;
 const scoreLevel = display.scoreLevel;
 
 /// Views cycled by keys 1-7 / trackball. See drawPage().
-pub const NUM_PAGES: u8 = 9;
+pub const NUM_PAGES: u8 = 10;
 
 // ---- Palette (RGB565, converted from web/dashboard.html) ----
 const ACCENT: u16 = 0x1FF3; // #1eff9d emerald — titles, "clear", GPS fix, battery ok
@@ -473,24 +474,34 @@ fn drawSystem() void {
     var vbuf: [24]u8 = undefined;
     drawStrScaled(8, 104, std.fmt.bufPrint(&vbuf, "Bat {d}.{d}V {d}%", .{ v / 1000, (v / 100) % 10, batteryPct(mv) }) catch "", 2);
 
+    // Free heap
+    col(TEXT);
+    var hbuf: [24]u8 = undefined;
+    drawStrScaled(8, 132, std.fmt.bufPrint(&hbuf, "Heap {d} KB", .{main.free_heap_kb()}) catch "", 2);
+
+    // GPS status
     var gbuf: [24]u8 = undefined;
     if (scanner.gps_fix) {
         col(ACCENT);
-        drawStrScaled(8, 132, std.fmt.bufPrint(&gbuf, "GPS {d} sat fix", .{scanner.gps_sats}) catch "", 2);
+        drawStrScaled(8, 160, std.fmt.bufPrint(&gbuf, "GPS {d} sat fix", .{scanner.gps_sats}) catch "", 2);
     } else if (scanner.gpsAlive()) {
         col(GOLD);
-        drawStrScaled(8, 132, std.fmt.bufPrint(&gbuf, "GPS searching ({d})", .{scanner.gps_sats_in_view}) catch "", 2);
+        drawStrScaled(8, 160, std.fmt.bufPrint(&gbuf, "GPS searching ({d})", .{scanner.gps_sats_in_view}) catch "", 2);
     } else {
         col(MUTED);
-        drawStrScaled(8, 132, "GPS no signal", 2);
+        drawStrScaled(8, 160, "GPS no signal", 2);
     }
 
     col(TEXT);
     var wbuf: [24]u8 = undefined;
-    drawStrScaled(8, 160, std.fmt.bufPrint(&wbuf, "WiFi {d} frm", .{main.wifi_get_frame_count()}) catch "", 2);
+    drawStrScaled(8, 188, std.fmt.bufPrint(&wbuf, "WiFi {d} frm", .{main.wifi_get_frame_count()}) catch "", 2);
 
-    var obuf: [24]u8 = undefined;
-    drawStrScaled(8, 188, std.fmt.bufPrint(&obuf, "OUI db {d}", .{main.KNOWN_OUIS_COUNT}) catch "", 2);
+    // Drop counters
+    var drop_buf: [32]u8 = undefined;
+    drawStrScaled(8, 216, std.fmt.bufPrint(&drop_buf, "WiFi drop {d}  BLE drop {d}", .{
+        main.wifi_get_dropped_count(), main.ble_scan_dropped(),
+    }) catch "", 2);
+
     update();
 }
 
@@ -596,9 +607,46 @@ fn drawHistoryPlayback() void {
     update();
 }
 
-/// View 8 — Settings (read-only config viewer).
+/// View 8 — Deployment cluster detail.
+fn drawDeploy() void {
+    header("DEPLOY", 8);
+    if (!analysis.deployment_alert_active) {
+        col(MUTED);
+        drawStrScaled(8, 110, "No deployment detected", 2);
+        update();
+        return;
+    }
+    col(ACCENT);
+    var buf: [40]u8 = undefined;
+    const sev: []const u8 = if (analysis.deployment_score >= analysis.DEPLOY_ALERT) "HIGH" else "WARN";
+    _ = std.fmt.bufPrint(&buf, "{d} {s}  {d}dev {d}surv", .{
+        analysis.deployment_score, sev,
+        analysis.deployment_device_count,
+        analysis.deployment_surv_count,
+    }) catch {};
+    drawStrScaled(8, 48, &buf, 2);
+
+    var row: u8 = 0;
+    for (0..main.tracker_count) |i| {
+        if (row >= 6) break;
+        const t = main.trackers[i];
+        if (t.sightings < 2) continue;
+        const y: u16 = 80 + @as(u16, row) * 23;
+        var lbuf: [40]u8 = undefined;
+        col(kindColor(t.kind));
+        const nm = display.kindStr(t.kind);
+        _ = std.fmt.bufPrint(&lbuf, "{s} {X:0<2}:{X:0<2} {d} {s}", .{
+            nm, t.mac[0], t.mac[1], t.rssi, scoreLevel(t.score),
+        }) catch continue;
+        drawStrScaled(16, y, &lbuf, 2);
+        row += 1;
+    }
+    update();
+}
+
+/// View 9 — Settings (read-only config viewer).
 fn drawSettings() void {
-    header("SETTINGS", 8);
+    header("SETTINGS", 9);
 
     // Name
     var name_buf: [32]u8 = undefined;
@@ -665,7 +713,8 @@ pub fn drawPage() void {
         5 => drawDevices(),
         6 => drawSystem(),
         7 => drawHistoryPlayback(),
-        8 => drawSettings(),
+        8 => drawDeploy(),
+        9 => drawSettings(),
         else => drawDashboard(),
     }
 }

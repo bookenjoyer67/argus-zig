@@ -11,6 +11,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <sys/stat.h>
 #include "esp_spiffs.h"
 
 static bool spiffs_ready = false;
@@ -128,6 +129,22 @@ void spiffs_csv_export(void) {
     }
 
     printf("--- END ---\n");
+}
+
+// Rotate CSV log when it exceeds ~512 KB: detections.csv → detections.1.csv → detections.2.csv
+// Returns 1 if rotated, 0 if no rotation needed.
+int spiffs_csv_rotate(void) {
+    if (!spiffs_ready) return 0;
+
+    struct stat st;
+    if (stat("/spiffs/detections.csv", &st) != 0) return 0;
+    if (st.st_size < (512 * 1024)) return 0;
+
+    remove("/spiffs/detections.2.csv");
+    rename("/spiffs/detections.1.csv", "/spiffs/detections.2.csv");
+    rename("/spiffs/detections.csv", "/spiffs/detections.1.csv");
+    printf("Argus: CSV rotated (was %d KB)\n", (int)(st.st_size / 1024));
+    return 1;
 }
 
 // Delete the CSV file to start fresh. Returns 0 on success.

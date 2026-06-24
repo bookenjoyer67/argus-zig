@@ -9,6 +9,7 @@ const std = @import("std");
 const main = @import("../main.zig");
 const scanner = @import("../scanner.zig");
 const display = @import("../display.zig");
+const analysis = @import("../analysis.zig");
 const ssd1306 = @import("../hal/ssd1306.zig");
 const g = @import("../hal/gfx.zig").Gfx(ssd1306);
 
@@ -27,7 +28,7 @@ const scoreLevel = display.scoreLevel;
 const batteryPct = display.batteryPct;
 
 /// Number of pages this board's UI cycles through.
-pub const NUM_PAGES: u8 = 8;
+pub const NUM_PAGES: u8 = 9;
 
 // ================================================================
 // SCREENS (boot / setup / pairing / OTA)
@@ -380,13 +381,19 @@ fn drawSystem() void {
     drawPageNum(6);
     oledDrawStr(0, 0, "SYSTEM");
 
-    // Free heap (simplified — ESP-IDF provides this)
-    oledDrawStr(0, 14, "Firmware: v" ++ main.FIRMWARE_VERSION);
-    oledDrawStr(0, 24, "Flash: 3MB app");
+    // Free heap
+    var heap_buf: [16]u8 = undefined;
+    _ = std.fmt.bufPrint(&heap_buf, "Heap:{d}KB", .{main.free_heap_kb()}) catch {};
+    oledDrawStr(0, 10, &heap_buf);
+
+    oledDrawStr(0, 18, "Firmware: v" ++ main.FIRMWARE_VERSION);
+
     // Carrier probes (IMSI catcher indicator)
     var probe_buf: [24]u8 = undefined;
     _ = std.fmt.bufPrint(&probe_buf, "Carrier:{d}", .{scanner.carrier_probes}) catch {};
-    oledDrawStr(0, 34, &probe_buf);
+    oledDrawStr(0, 26, &probe_buf);
+
+    // GPS status
     var gps_buf: [24]u8 = undefined;
     if (scanner.gps_fix) {
         _ = std.fmt.bufPrint(&gps_buf, "GPS:{d}sat 3Dfix", .{scanner.gps_sats}) catch {};
@@ -404,13 +411,14 @@ fn drawSystem() void {
     _ = std.fmt.bufPrint(&buf, "V: {d}.{d}V", .{ v / 1000, (v / 100) % 10 }) catch {};
     oledDrawStr(0, 44, &buf);
 
-    // WiFi ring buffer overflow counter
-    const dropped = main.wifi_get_dropped_count();
-    if (dropped > 0) {
-        var drop_buf: [24]u8 = undefined;
-        _ = std.fmt.bufPrint(&drop_buf, "Dropped:{d}", .{dropped}) catch {};
-        oledDrawStr(0, 50, &drop_buf);
-    }
+    // Drop counters
+    var drop_buf: [24]u8 = undefined;
+    const wdrop = main.wifi_get_dropped_count();
+    const bdrop = main.ble_scan_dropped();
+    _ = std.fmt.bufPrint(&drop_buf, "WiFi drop:{d}", .{wdrop}) catch {};
+    oledDrawStr(0, 52, &drop_buf);
+    _ = std.fmt.bufPrint(&drop_buf, "BLE drop:{d}", .{bdrop}) catch {};
+    oledDrawStr(80, 52, &drop_buf);
 
     oledDrawStr(0, 56, "PRG:next page");
     oledUpdate();
@@ -447,6 +455,37 @@ fn drawAllDevices() void {
     oledUpdate();
 }
 
+/// Page 8: Deployment cluster detail (if active).
+fn drawDeployPage() void {
+    oledClear();
+    drawPageNum(8);
+    if (!analysis.deployment_alert_active) {
+        oledDrawStr(0, 0, "DEPLOYMENT");
+        oledDrawStr(0, 28, "No deployment");
+        oledDrawStr(0, 56, "PRG:next page");
+        oledUpdate();
+        return;
+    }
+    oledDrawStr(0, 0, "DEPLOYMENT");
+    var buf: [21]u8 = undefined;
+    const sev: []const u8 = if (analysis.deployment_score >= analysis.DEPLOY_ALERT) "HIGH" else "WARN";
+    _ = std.fmt.bufPrint(&buf, "{d} {s}", .{ analysis.deployment_score, sev }) catch {};
+    oledDrawStr(0, 8, &buf);
+    var row: u8 = 0;
+    for (0..main.tracker_count) |i| {
+        if (row >= 5) break;
+        const t = main.trackers[i];
+        if (t.sightings < 2) continue;
+        var mbuf: [16]u8 = undefined;
+        const nshow = if (t.kind == .flock_camera) "FLK" else display.kindStr(t.kind);
+        _ = std.fmt.bufPrint(&mbuf, "{s} {X:0<2}:{X:0<2} {d}", .{ nshow, t.mac[0], t.mac[1], t.rssi }) catch continue;
+        oledDrawStr(0, 18 + row * 8, &mbuf);
+        row += 1;
+    }
+    oledDrawStr(0, 56, "PRG:next page");
+    oledUpdate();
+}
+
 /// Route to the current page. Called on button press, at boot, and on new detection.
 pub fn drawPage() void {
     switch (display.current_page) {
@@ -458,6 +497,7 @@ pub fn drawPage() void {
         5 => drawStats(),
         6 => drawSystem(),
         7 => drawAllDevices(),
+        8 => drawDeployPage(),
         else => drawSummary(),
     }
 }

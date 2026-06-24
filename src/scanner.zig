@@ -76,6 +76,13 @@ var burst_last_spike_at: u32 = 0;           // tick_ms of the last flagged bucke
 var stingray_alert_ms: u32 = 0;             // tick_ms the alert went active
 var stingray_last_location: ?[2]i32 = null; // GPS at last suspected event
 
+/// Carrier probe MAC dedup — prevents a single phone from inflating the burst counter.
+const CARRIER_DEDUP_SLOTS = 8;
+const CARRIER_DEDUP_MS: u32 = 2000;
+var carrier_dedup_macs: [CARRIER_DEDUP_SLOTS][6]u8 = undefined;
+var carrier_dedup_ts: [CARRIER_DEDUP_SLOTS]u32 = undefined;
+var carrier_dedup_count: u8 = 0;
+
 // ================================================================
 // OUI MATCHING
 // ================================================================
@@ -270,7 +277,7 @@ pub fn classifyBle(adv_data: []const u8) ClassResult {
             1 => methods |= RAVEN_FW_1_1,
             else => {},
         }
-    } else if (raven_uuids == 1) {
+    } else if (raven_fw_major >= 2) {
         kind = .raven;
         methods |= METHOD_RAVEN_LOW;
     }
@@ -303,6 +310,8 @@ pub fn classifyWiFi(mac: [6]u8, ssid: []const u8) ClassResult {
     }
 
     // Carrier SSID probes (IMSI catcher indicator) — count unique carrier SSIDs
+    // Dedup: track last 8 MACs with timestamps so a single aggressive phone
+    // doesn't inflate the burst counter.
     const carrier_ssids = [_][]const u8{ "attwifi", "VerizonWiFi", "xfinitywifi", "T-Mobile", "vodafone", "EE WiFi", "Orange", "o2wifi" };
     for (carrier_ssids) |cs| {
         if (ssid.len >= cs.len) {
@@ -312,8 +321,27 @@ pub fn classifyWiFi(mac: [6]u8, ssid: []const u8) ClassResult {
                 if (sc != std.ascii.toLower(kc)) { match = false; break; }
             }
             if (match) {
-                carrier_probes += 1;
-                burst_recent_count += 1;
+                // Check dedup — have we seen this MAC recently?
+                var seen_recently = false;
+                for (0..carrier_dedup_count) |i| {
+                    if (std.mem.eql(u8, &carrier_dedup_macs[i], &mac)) {
+                        if ((main.tick_ms -% carrier_dedup_ts[i]) < CARRIER_DEDUP_MS) {
+                            seen_recently = true;
+                        } else {
+                            carrier_dedup_ts[i] = main.tick_ms;
+                        }
+                        break;
+                    }
+                }
+                if (!seen_recently) {
+                    if (carrier_dedup_count < CARRIER_DEDUP_SLOTS) {
+                        @memcpy(&carrier_dedup_macs[carrier_dedup_count], &mac);
+                        carrier_dedup_ts[carrier_dedup_count] = main.tick_ms;
+                        carrier_dedup_count += 1;
+                    }
+                    carrier_probes += 1;
+                    burst_recent_count += 1;
+                }
                 break;
             }
         }
@@ -600,6 +628,12 @@ pub fn countByKind() KindCounts {
     return c;
 }
 
+/// Append a raw line to the CSV log buffer (used by analysis.zig for
+/// deployment cluster summaries).
+pub fn csvLogAppendLine(line: []const u8) void {
+    csvAppend(line);
+}
+
 // ================================================================
 // SESSION PERSISTENCE
 // ================================================================
@@ -622,24 +656,28 @@ pub fn saveSession() void {
     session_dirty = true;
 }
 
+/// Session file format version byte. Increment when the format changes.
+const SESSION_VERSION: u8 = 1;
+
 /// Write the session counter to SPIFFS if dirty and the save interval elapsed.
-/// Called once per main-loop iteration.
+/// Called once per main-loop iteration. Format: [version:1][counter:ascii\0].
 pub fn sessionTick(now: u32) void {
     if (session_dirty and (now -% session_last_save_ms) >= SESSION_SAVE_MS) {
-        var buf: [16]u8 = undefined;
-        const s = std.fmt.bufPrint(&buf, "{d}", .{session_total}) catch return;
-        _ = main.spiffs_write_file("session.dat", s.ptr, s.len);
+        var buf: [17]u8 = undefined;
+        buf[0] = SESSION_VERSION;
+        const s = std.fmt.bufPrint(buf[1..], "{d}", .{session_total}) catch return;
+        _ = main.spiffs_write_file("session.dat", &buf, 1 + s.len);
         session_dirty = false;
         session_last_save_ms = now;
     }
 }
 
-/// Restore session counter from SPIFFS on boot.
+/// Restore session counter from SPIFFS on boot. Checks the version byte.
 pub fn restoreSession() void {
-    var buf: [16]u8 = undefined;
+    var buf: [17]u8 = undefined;
     const n = main.spiffs_read_file("session.dat", &buf, buf.len);
-    if (n > 0) {
-        session_total = std.fmt.parseInt(u32, buf[0..@intCast(n)], 10) catch 0;
+    if (n > 0 and buf[0] == SESSION_VERSION) {
+        session_total = std.fmt.parseInt(u32, buf[1..@intCast(n)], 10) catch 0;
     }
 }
 
@@ -654,6 +692,8 @@ pub var gps_lon: i32 = 0;   // e.g. -90199400 = -90.199400°
 pub var gps_fix: bool = false;
 pub var gps_sats: u8 = 0;          // satellites used in the fix (GGA)
 pub var gps_sats_in_view: u8 = 0;  // satellites in view, summed across constellations (GSV)
+/// UTC hour of the most recent GPS fix, or null if no fix / no GPS.
+pub var gps_utc_hour: ?u5 = null;
 
 /// Per-constellation GSV totals indexed by talker second char (Gx): P=GPS,
 /// L=GLONASS, A=Galileo, B=BeiDou. Each constellation emits its own GSV block
@@ -743,7 +783,7 @@ pub fn parseNmea(line: []const u8) void {
             pos = end + 1;
         }
 
-        // fields[]: 0=time, 1=status (A=valid/V=void), 2=lat, 3=N/S, 4=lon, 5=E/W
+        // fields[]: 0=time (HHMMSS.SS), 1=status (A=valid/V=void), 2=lat, 3=N/S, 4=lon, 5=E/W
         if (fi >= 6 and fields[1].len > 0) {
             gps_fix = fields[1][0] == 'A';
             if (gps_fix) {
@@ -751,6 +791,10 @@ pub fn parseNmea(line: []const u8) void {
                 const lon = parseNmeaCoord(fields[4], fields[5]);
                 if (lat != 0) gps_lat = lat;
                 if (lon != 0) gps_lon = lon;
+                // Extract UTC hour from HHMMSS.SS time field.
+                if (fields[0].len >= 6) {
+                    gps_utc_hour = std.fmt.parseInt(u5, fields[0][0..2], 10) catch null;
+                }
             }
         }
         return;
@@ -843,6 +887,11 @@ fn csvAppend(line: []const u8) void {
     }
 }
 
+/// C-callable wrapper for the CSV flush. Used by httpd.c before CSV export.
+pub export fn csv_log_flush() callconv(.c) void {
+    csvLogFlush();
+}
+
 /// Flush the accumulated CSV buffer to SPIFFS in a single fopen("a").
 /// Also called before serial CSV export so buffered lines aren't lost.
 pub fn csvLogFlush() void {
@@ -858,6 +907,7 @@ pub fn csvLogFlush() void {
 pub fn csvLogTick(now: u32) void {
     if (csv_log_lines >= CSV_FLUSH_LINES or (now -% csv_last_flush_ms) >= CSV_FLUSH_MS) {
         csvLogFlush();
+        _ = main.spiffs_csv_rotate();
         csv_last_flush_ms = now;
     }
 }

@@ -12,6 +12,7 @@ const scanner = @import("scanner.zig");
 const display = @import("display.zig");
 const mesh = @import("mesh.zig");
 const config = @import("config.zig");
+const analysis = @import("analysis.zig");
 
 const FIRMWARE_VERSION = main.FIRMWARE_VERSION;
 const MAX_DETECTIONS = 50;
@@ -127,6 +128,9 @@ pub export fn zig_api_status(out: [*]u8, max: u32) callconv(.c) u32 {
         c.airtag, c.tile, c.samsung, c.findmy,
     });
     b.add("\"stingray_active\":{s},", .{boolStr(scanner.stingray_alert_active)});
+    b.add("\"deployment_active\":{s},", .{boolStr(analysis.deployment_alert_active)});
+    b.add("\"deployment_score\":{d},", .{analysis.deployment_score});
+    b.add("\"deployment_devices\":{d},", .{analysis.deployment_device_count});
     b.add("\"mesh_peers\":{d},", .{mesh.onlinePeerCount()});
     b.add("\"total_detections\":{d},", .{scanner.session_total});
     b.add("\"threat_level\":\"{s}\",", .{main.threatLevelStr()});
@@ -135,6 +139,9 @@ pub export fn zig_api_status(out: [*]u8, max: u32) callconv(.c) u32 {
     b.add("\"gps_sats_in_view\":{d},", .{scanner.gps_sats_in_view});
     b.add("\"gps_lat\":{d},", .{scanner.gps_lat});
     b.add("\"gps_lon\":{d},", .{scanner.gps_lon});
+    b.add("\"free_heap_kb\":{d},", .{main.free_heap_kb()});
+    b.add("\"wifi_dropped\":{d},", .{main.wifi_get_dropped_count()});
+    b.add("\"ble_dropped\":{d},", .{main.ble_scan_dropped()});
     b.add("\"firmware_version\":\"{s}\"", .{FIRMWARE_VERSION});
     b.add("}}", .{});
     return @intCast(b.len);

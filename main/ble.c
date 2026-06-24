@@ -43,12 +43,13 @@ struct ble_scan_result {
 static struct ble_scan_result ble_ring[BLE_RING_SIZE];
 static volatile int ble_ring_write = 0;
 static volatile int ble_ring_read = 0;
+static volatile int ble_ring_dropped = 0;
 
 // NimBLE GAP event callback — called from host task.
 static int ble_gap_event_cb(struct ble_gap_event *event, void *arg) {
     if (event->type == BLE_GAP_EVENT_DISC) {
         int next = (ble_ring_write + 1) % BLE_RING_SIZE;
-        if (next == ble_ring_read) return 0; // ring full — drop
+        if (next == ble_ring_read) { ble_ring_dropped++; return 0; } // ring full — drop
 
         struct ble_scan_result *r = &ble_ring[ble_ring_write];
         memcpy(r->addr, event->disc.addr.val, 6);
@@ -502,4 +503,8 @@ int ble_scan_poll(uint8_t *addr_out, int8_t *rssi_out,
 
     ble_ring_read = (ble_ring_read + 1) % BLE_RING_SIZE;
     return 1;
+}
+
+int ble_scan_dropped(void) {
+    return ble_ring_dropped;
 }

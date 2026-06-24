@@ -2,6 +2,7 @@ const std = @import("std");
 const main = @import("main.zig");
 const display = @import("display.zig");
 const scanner = @import("scanner.zig");
+const analysis = @import("analysis.zig");
 
 // ================================================================
 // LoRa MESH NETWORKING — Packet format v2
@@ -46,6 +47,7 @@ const PKT_MAX = 32;
 
 const TYPE_HEARTBEAT = 0x01;
 const TYPE_DETECTION = 0x02;
+const TYPE_DEPLOY = 0x04;
 
 // ================================================================
 // CRC-8 (Dallas/Maxim, reflected poly 0x8C)
@@ -75,7 +77,7 @@ fn crc8(data: []const u8) u8 {
 
 pub const HEARTBEAT_INTERVAL_MS: u32 = 30000; // 30 seconds
 pub var last_heartbeat_ms: u32 = 0;
-
+pub var last_deploy_ms: u32 = 0;
 /// Updated from the main loop before each heartbeat.
 pub var mesh_battery_mv: u16 = 0;
 pub var mesh_uptime_sec: u32 = 0;
@@ -127,6 +129,37 @@ pub fn meshSend(entry: @TypeOf(main.trackers[0])) void {
 pub fn sendHeartbeat() void {
     var pkt: [PKT_MAX]u8 = undefined;
     const len = makeHeartbeat(&pkt, mesh_battery_mv, scanner.gps_lat, scanner.gps_lon, mesh_uptime_sec);
+    _ = main.lora_send(&pkt, len);
+}
+
+// Type 0x04 — Deployment alert (16 bytes):
+//   [0]      type | hop
+//   [1]      sender_id
+//   [2..4]   cluster score (u16 LE)
+//   [4]      device_count
+//   [5]      surv_count
+//   [6]      embedded_count
+//   [7..11]  lat (i32 LE, detecting unit's position)
+//   [11..15] lon (i32 LE)
+//   [15]     CRC-8
+fn makeDeploy(pkt: *[PKT_MAX]u8, score: u16, device_count: u8, surv: u8, embedded: u8) u8 {
+    pkt[0] = TYPE_DEPLOY; // hop 0
+    pkt[1] = mesh_node_id();
+    std.mem.writeInt(u16, pkt[2..4], score, .little);
+    pkt[4] = device_count;
+    pkt[5] = surv;
+    pkt[6] = embedded;
+    std.mem.writeInt(i32, pkt[7..11], scanner.gps_lat, .little);
+    std.mem.writeInt(i32, pkt[11..15], scanner.gps_lon, .little);
+    const len: u8 = 15;
+    pkt[len] = crc8(pkt[0..len]);
+    return len + 1;
+}
+
+/// Build and broadcast a deployment-cluster alert. Rate-limited by the caller.
+pub fn sendDeployAlert(score: u16, devices: u8, surv: u8, embedded: u8) void {
+    var pkt: [PKT_MAX]u8 = undefined;
+    const len = makeDeploy(&pkt, score, devices, surv, embedded);
     _ = main.lora_send(&pkt, len);
 }
 
@@ -198,7 +231,7 @@ pub fn onlinePeerCount() u32 {
 // Drop a repeat (sender, MAC) seen within the window so the base station
 // table isn't spammed and LoRa airtime isn't wasted.
 
-const DEDUP_CACHE_SIZE = 16;
+const DEDUP_CACHE_SIZE = 32;
 const DEDUP_WINDOW_MS: u32 = 300000; // 5 minutes
 
 const DedupEntry = struct {
@@ -313,6 +346,7 @@ pub fn meshRecv(pkt: []const u8) void {
     switch (pkt_type) {
         TYPE_HEARTBEAT => recvHeartbeat(pkt, hop),
         TYPE_DETECTION => recvDetection(pkt, hop),
+        TYPE_DEPLOY => recvDeploy(pkt, hop),
         else => {},
     }
 }
@@ -373,4 +407,22 @@ fn recvDetection(pkt: []const u8, hop: u4) void {
     }
 
     updateCameraMap(mac, kind, sender_id, rssi, lat, lon);
+}
+
+fn recvDeploy(pkt: []const u8, hop: u4) void {
+    _ = hop;
+    if (pkt.len < 16) return;
+    const sender_id: u8 = pkt[1];
+    // A peer reports a deployment cluster. Log the peer and adopt its
+    // alert locally if its score beats ours (mesh corroboration).
+    peerSeen(sender_id);
+
+    const score: u16 = std.mem.readInt(u16, pkt[2..][0..2], .little);
+    if (score > analysis.deployment_score) {
+        analysis.deployment_alert_active = true;
+        analysis.deployment_score = score;
+        analysis.deployment_device_count = pkt[4];
+        analysis.deployment_surv_count = pkt[5];
+        analysis.deployment_embedded_count = pkt[6];
+    }
 }
