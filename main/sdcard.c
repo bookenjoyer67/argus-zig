@@ -71,4 +71,17 @@ int sd_append_line(const char *path, const char *line) {
     return 0;
 }
 
+// Read up to max bytes from /sdcard/<path> into buf, return bytes read.
+// Returns -1 if no card, -2 if file doesn't exist.
+int sd_read_file(const char *path, uint8_t *buf, size_t max) {
+    if (!s_card) return -1;
+    char full[160];
+    snprintf(full, sizeof(full), SD_MOUNT "/%s", path);
+    FILE *f = fopen(full, "r");
+    if (!f) return -2;
+    size_t n = fread(buf, 1, max, f);
+    fclose(f);
+    return (int)n;
+}
+
 #endif // BOARD_TDECK

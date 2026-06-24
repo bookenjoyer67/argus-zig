@@ -67,6 +67,7 @@ comptime {
     _ = &api.zig_api_detections;
     _ = &api.zig_api_mesh;
     _ = &api.zig_api_config;
+    _ = &api.zig_api_history;
 }
 
 // Re-export for modules that need them
@@ -405,11 +406,110 @@ pub const TrackerEntry = struct {
     mesh_lon: i32 = 0,       // GPS from a mesh detection (source == 1)
     first_seen: u32 = 0,     // tick_ms of the first sighting this session
     sightings: u16 = 1,      // how many times this MAC has been seen
+    tag: u8 = 0,             // user-applied label (0=none, 1=CONF, 2=FALSE, 3=UNKN, 4=MUNI, 5=PRIV)
 };
 
 pub var trackers: [MAX_TRACKERS]TrackerEntry = undefined;
 pub var tracker_count: usize = 0;
 pub var tick_ms: u32 = 0;
+
+// ================================================================
+// DETECTION HISTORY RING BUFFER (playback view)
+// ================================================================
+//
+// Stores the last 200 detections for the T-Deck playback view.
+// Wraps circularly; oldest entries fall off. ~2.8 KB total.
+
+pub const HISTORY_MAX = 200;
+
+pub const HistoryEntry = struct {
+    mac: [6]u8,
+    kind: display.TrackerType, // u8
+    rssi: i8,
+    score: u8,
+    time_ms: u32,
+    tag: u8 = 0,
+};
+
+pub var history: [HISTORY_MAX]HistoryEntry = undefined;
+pub var history_write: usize = 0;
+pub var history_count: usize = 0;
+pub var history_filter: u8 = 0;  // 0=all, 1=flock, 2=drone, 3=raven, 4=camera, 5=tracker
+pub var history_sort: u8 = 0;    // 0=newest first, 1=highest score first
+pub var history_scroll: u16 = 0; // scroll offset from top
+
+/// Push a new detection into the history ring buffer.
+pub fn pushHistory(mac: [6]u8, kind: display.TrackerType, rssi: i8, score: u8) void {
+    history[history_write] = .{
+        .mac = mac,
+        .kind = kind,
+        .rssi = rssi,
+        .score = score,
+        .time_ms = tick_ms,
+    };
+    history_write = (history_write + 1) % HISTORY_MAX;
+    if (history_count < HISTORY_MAX) history_count += 1;
+}
+
+// ================================================================
+// SD CARD CONTINUOUS LOGGING (base station mode, T-Deck)
+// ================================================================
+//
+// Accumulates detection CSV lines in a RAM ring buffer, flushes to
+// /sdcard/detections.csv every N lines or M seconds to reduce SPI wear.
+
+const SD_LOG_BUF_SIZE = 4096;
+const SD_FLUSH_LINES: u8 = 64;
+const SD_FLUSH_MS: u32 = 30000;
+
+var sd_log_buf: [SD_LOG_BUF_SIZE]u8 = undefined;
+var sd_log_len: u16 = 0;
+var sd_log_lines: u8 = 0;
+var sd_last_flush_ms: u32 = 0;
+
+/// Append a CSV line to the in-memory SD log buffer; flush if full.
+pub fn sdLogAppend(line: []const u8) void {
+    if (sd_log_len + line.len + 2 > SD_LOG_BUF_SIZE) {
+        sdLogFlush();
+    }
+    if (line.len > 0 and sd_log_len + line.len + 2 <= SD_LOG_BUF_SIZE) {
+        @memcpy(sd_log_buf[sd_log_len..][0..line.len], line);
+        sd_log_len += @intCast(line.len);
+        sd_log_buf[sd_log_len] = '\n';
+        sd_log_len += 1;
+        sd_log_lines += 1;
+    }
+}
+
+/// Write the accumulated buffer to SD card.
+pub fn sdLogFlush() void {
+    if (sd_log_len == 0) return;
+    sd_log_buf[sd_log_len] = 0;
+    const path: [14:0]u8 = "detections.csv".*;
+    _ = board.storageAppend(&path, @ptrCast(&sd_log_buf));
+    sd_log_len = 0;
+    sd_log_lines = 0;
+}
+
+/// Format a CSV line and push to the SD log buffer.
+fn sdLogCsvLine(mac: [6]u8, kind: display.TrackerType, rssi: i8, score: u8, methods: u16) void {
+    var line: [120]u8 = undefined;
+    const ks = display.kindStr(kind);
+    const s = std.fmt.bufPrint(&line, "{d},{s},{X:0>2}{X:0>2}{X:0>2}{X:0>2}{X:0>2}{X:0>2},{d},{d},{d},{d},{X:0>2}", .{
+        tick_ms, ks,
+        mac[0], mac[1], mac[2], mac[3], mac[4], mac[5],
+        rssi, score, scanner.gps_lat, scanner.gps_lon, methods,
+    }) catch return;
+    sdLogAppend(s);
+}
+
+/// Check if the periodic flush is due and execute it.
+pub fn sdLogTick(now: u32) void {
+    if (sd_log_lines >= SD_FLUSH_LINES or (now -% sd_last_flush_ms) >= SD_FLUSH_MS) {
+        sdLogFlush();
+        sd_last_flush_ms = now;
+    }
+}
 
 // ================================================================
 // GPIO HELPERS
@@ -457,6 +557,179 @@ pub var stealth_mode: bool = false;
 /// Set true if a hardware init step failed (e.g. OLED I2C). Drives the
 /// LED error pattern at runtime so a headless device still reports the fault.
 pub var init_failed: bool = false;
+
+// ================================================================
+// ON-DEVICE LABELING (T-Deck keyboard)
+// ================================================================
+//
+// Tag taxonomy — one u8 per tracker entry (0 = none). T-Deck keys
+// 1-5 assign tags in label mode; the tag is stored in the tracker
+// table and persisted to SD card as a CSV row.
+
+pub const TAG_NONE: u8 = 0;
+pub const TAG_CONF: u8 = 1;  // Confirmed surveillance device
+pub const TAG_FALSE: u8 = 2; // False positive
+pub const TAG_UNKN: u8 = 3;  // Unknown / revisit later
+pub const TAG_MUNI: u8 = 4;  // Municipal/government infrastructure
+pub const TAG_PRIV: u8 = 5;  // Private/commercial
+
+pub fn tagLabel(tag: u8) []const u8 {
+    return switch (tag) {
+        TAG_CONF => "CONF",
+        TAG_FALSE => "FALSE",
+        TAG_UNKN => "UNKN",
+        TAG_MUNI => "MUNI",
+        TAG_PRIV => "PRIV",
+        else => "",
+    };
+}
+
+/// Label mode: T-Deck overlay on Surveillance / Devices views.
+/// Trackball moves selection cursor; number keys apply tags.
+pub var label_mode: bool = false;
+pub var label_cursor: u8 = 0;   // selected row index (0 = top of current view)
+pub var label_view_kind: u8 = 0; // 1 = surv view, 5 = devices view (set when entering)
+
+/// Settings mode cursor: which config field is highlighted (0-4).
+pub var settings_cursor: u8 = 0;
+
+/// Mute audio alerts (independent of stealth — display and LED stay active).
+pub var audio_muted: bool = false;
+
+/// List-view scroll offset (used by trackball up/down on list-containing pages).
+pub var page_scroll: u8 = 0;
+
+/// Apply a tag to the currently-selected row, persist to SD, and advance cursor.
+pub fn applyLabelTag(tag: u8) void {
+    var row: u8 = 0;
+    var i: usize = tracker_count;
+    while (i > 0) {
+        i -= 1;
+        const is_visible = switch (label_view_kind) {
+            1 => switch (trackers[i].kind) {
+                .flock_camera, .drone, .raven, .camera => true,
+                else => false,
+            },
+            5 => (trackers[i].methods & scanner.METHOD_OUI) != 0,
+            else => false,
+        };
+        if (!is_visible) continue;
+        if (row == label_cursor) {
+            trackers[i].tag = tag;
+            // Persist to SD card (no-op on Heltec / if no card).
+            var line: [160:0]u8 = undefined;
+            const path: [8:0]u8 = "tags.csv".*;
+            const ln = std.fmt.bufPrintZ(&line, "{d},{X:0>2}{X:0>2}{X:0>2}{X:0>2}{X:0>2}{X:0>2},{s},{d},{d},{d},{d},{s}", .{
+                tick_ms,
+                trackers[i].mac[0], trackers[i].mac[1], trackers[i].mac[2], trackers[i].mac[3], trackers[i].mac[4], trackers[i].mac[5],
+                @tagName(trackers[i].kind),
+                trackers[i].score,
+                trackers[i].rssi,
+                scanner.gps_lat,
+                scanner.gps_lon,
+                tagLabel(tag),
+            }) catch null;
+            if (ln) |sentinel_slice| {
+                _ = board.storageAppend(&path, sentinel_slice.ptr);
+            }
+            // Advance cursor (wrap).
+            label_cursor += 1;
+            var vis: u8 = 0;
+            var j: usize = tracker_count;
+            while (j > 0) {
+                j -= 1;
+                const v = switch (label_view_kind) {
+                    1 => switch (trackers[j].kind) { .flock_camera, .drone, .raven, .camera => true, else => false },
+                    5 => (trackers[j].methods & scanner.METHOD_OUI) != 0,
+                    else => false,
+                };
+                if (v) vis += 1;
+            }
+            if (label_cursor >= vis) label_cursor = 0;
+            break;
+        }
+        row += 1;
+    }
+}
+
+// ================================================================
+// MANUAL OVERRIDE MAP (reclassification)
+// ================================================================
+//
+// Fixed-capacity lookup: MAC → corrected kind. When the classifier
+// misidentifies a device, the user can reclassify it in label mode.
+// Subsequent sightings use the corrected kind. Volatile (lost on reboot);
+// persistent storage to SD card (overrides.csv) is deferred.
+
+const OVERRIDE_MAX = 64;
+
+const OverrideEntry = struct {
+    mac: [6]u8,
+    kind: display.TrackerType,
+};
+
+var override_map: [OVERRIDE_MAX]OverrideEntry = undefined;
+var override_count: usize = 0;
+
+/// Look up a MAC in the override map. Returns the corrected kind, or null.
+pub fn lookupOverride(mac: [6]u8) ?display.TrackerType {
+    for (override_map[0..override_count]) |*e| {
+        if (std.mem.eql(u8, &e.mac, &mac)) return e.kind;
+    }
+    return null;
+}
+
+/// Add or update an override entry. If full, evict the oldest.
+pub fn applyOverride(mac: [6]u8, kind: display.TrackerType) void {
+    // Update existing entry
+    for (override_map[0..override_count]) |*e| {
+        if (std.mem.eql(u8, &e.mac, &mac)) {
+            e.kind = kind;
+            return;
+        }
+    }
+    // New entry
+    const entry = OverrideEntry{ .mac = mac, .kind = kind };
+    if (override_count < OVERRIDE_MAX) {
+        override_map[override_count] = entry;
+        override_count += 1;
+    } else {
+        // Evict oldest (index 0), shift left, append at end
+        for (1..OVERRIDE_MAX) |i| {
+            override_map[i - 1] = override_map[i];
+        }
+        override_map[OVERRIDE_MAX - 1] = entry;
+    }
+}
+
+/// Clear all overrides.
+pub fn clearOverrides() void {
+    override_count = 0;
+}
+
+/// Reclassify the currently-selected entry in label mode (key 'r' + number).
+pub fn applyReclassify(kind: display.TrackerType) void {
+    var row: u8 = 0;
+    var i: usize = tracker_count;
+    while (i > 0) {
+        i -= 1;
+        const is_visible = switch (label_view_kind) {
+            1 => switch (trackers[i].kind) {
+                .flock_camera, .drone, .raven, .camera => true,
+                else => false,
+            },
+            5 => (trackers[i].methods & scanner.METHOD_OUI) != 0,
+            else => false,
+        };
+        if (!is_visible) continue;
+        if (row == label_cursor) {
+            applyOverride(trackers[i].mac, kind);
+            trackers[i].kind = kind;
+            break;
+        }
+        row += 1;
+    }
+}
 
 // ================================================================
 // WiFi CHANNEL HOPPING (mobile role)
@@ -599,6 +872,7 @@ pub fn updateLed() void {
 /// Advance to the next display page (wraps).
 pub fn nextPage() void {
     display.current_page = (display.current_page + 1) % display.NUM_PAGES;
+    page_scroll = 0;
 }
 
 /// Go to the previous display page (wraps).
@@ -607,11 +881,12 @@ pub fn prevPage() void {
         display.NUM_PAGES - 1
     else
         display.current_page - 1;
+    page_scroll = 0;
 }
 
 /// Jump to a specific page (ignored if out of range).
 pub fn gotoPage(n: u8) void {
-    if (n < display.NUM_PAGES) display.current_page = n;
+    if (n < display.NUM_PAGES) { display.current_page = n; page_scroll = 0; }
 }
 
 /// Toggle stealth mode: display off + LED dark + BLE advertising off (and back).
@@ -687,6 +962,8 @@ export fn zig_main() callconv(.c) void {
     //   5. Sleeps 10ms
 
     var had_new: bool = false; // true if a new tracker was detected this iteration
+    var new_kind: display.TrackerType = .unknown;
+    var new_score: u8 = 0;
     var last_draw_ms: u32 = 0; // throttles live page refresh
     var prev_alert_tier: u8 = 0; // last audio-alert threat tier (rising-edge beep)
 
@@ -699,6 +976,8 @@ export fn zig_main() callconv(.c) void {
 
     while (true) {
         had_new = false;
+        new_score = 0;
+        new_kind = .unknown;
 
         // --- BLE scan polling ---
         // Drain all available results from the NimBLE ring buffer.
@@ -714,14 +993,22 @@ export fn zig_main() callconv(.c) void {
         var poll_count: u32 = 0;
         while (ble_scan_poll(&ble_addr, &ble_rssi, &ble_adv_type, &ble_data, &ble_data_len) != 0) {
             poll_count += 1;
-            const result = scanner.classifyBle(ble_data[0..ble_data_len]);
+            var result = scanner.classifyBle(ble_data[0..ble_data_len]);
+            if (lookupOverride(ble_addr)) |corrected| {
+                result.kind = corrected;
+            }
             const is_new = scanner.trackDevice(ble_addr, result, ble_rssi);
 
             if (is_new) {
                 had_new = true;
+                const s = scanner.computeScore(result.methods, ble_rssi, ble_addr);
+                if (s > new_score) { new_kind = result.kind; new_score = s; }
+                pushHistory(ble_addr, result.kind, ble_rssi, s);
                 scanner.session_total += 1;
                 scanner.saveSession();
                 scanner.logCsv(ble_addr, ble_rssi);
+                // SD card logging (base station, T-Deck only)
+                sdLogCsvLine(ble_addr, result.kind, ble_rssi, s, result.methods);
             }
 
             // Yield every 8 events to avoid watchdog timeout
@@ -775,6 +1062,10 @@ export fn zig_main() callconv(.c) void {
                     result.methods |= rid_methods;
                 }
             }
+            // Check manual override — user-corrected classification wins.
+            if (lookupOverride(wifi_addr)) |corrected| {
+                result.kind = corrected;
+            }
             if (result.kind == .unknown) {
                 // Yield periodically even when skipping
                 if (poll_count % 16 == 0) {
@@ -787,9 +1078,13 @@ export fn zig_main() callconv(.c) void {
 
             if (is_new) {
                 had_new = true;
+                const s = scanner.computeScore(result.methods, wifi_rssi, wifi_addr);
+                if (s > new_score) { new_kind = result.kind; new_score = s; }
+                pushHistory(wifi_addr, result.kind, wifi_rssi, s);
                 scanner.session_total += 1;
                 scanner.saveSession();
                 scanner.logCsv(wifi_addr, wifi_rssi);
+                sdLogCsvLine(wifi_addr, result.kind, wifi_rssi, s, result.methods);
             }
 
             // Yield every 4 events to avoid watchdog timeout
@@ -886,10 +1181,15 @@ export fn zig_main() callconv(.c) void {
         // or the stealth / error state. Replaces the old heartbeat blink.
         updateLed();
 
-        // --- Audio alert (rising threat tier) ---
-        // Beep on boards with a speaker (T-Deck) when the threat tier rises.
-        // Heltec's board.alert() is a no-op — its LED already conveys this.
+        // --- Audio alert (rising threat tier + new detections) ---
+        // Beep on boards with a speaker (T-Deck) when the threat tier rises
+        // or a new detection enters the table (per-kind tone signature).
+        // Heltec's board.alert/alertKind are no-ops — its LED conveys this.
         if (!stealth_mode) {
+            // Per-detection alert: kind-specific tone on new entries ≥ MED.
+            if (had_new and new_score >= scanner.SCORE_MED) {
+                board.alertKind(new_kind, new_score);
+            }
             const lvl = currentThreatLevel();
             const tier: u8 = if (scanner.stingray_alert_active or lvl >= scanner.SCORE_CERT)
                 3
@@ -965,6 +1265,10 @@ export fn zig_main() callconv(.c) void {
         // GPS liveness decay: when no NMEA arrives for a while, gps_nmea_ttl
         // reaches 0 and the UI shows "no signal" instead of "searching".
         if (scanner.gps_nmea_ttl > 0) scanner.gps_nmea_ttl -= 1;
+
+        // --- SD card logging flush ---
+        // Periodically write the accumulated buffer to /sdcard/detections.csv.
+        sdLogTick(tick_ms);
 
         // --- Yield to FreeRTOS ---
         // 10ms sleep lets other tasks run (idle task, WiFi task if enabled).

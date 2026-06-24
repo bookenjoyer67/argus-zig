@@ -61,6 +61,9 @@ pub const led = impl.led;
 pub const button = impl.button;
 pub const input = impl.input;
 pub const alert = impl.alert;
+pub const alertKind = impl.alertKind;
+pub const storageAppend = impl.storageAppend;
+pub const storageRead = impl.storageRead;
 pub const ui = impl.ui;
 EOF
 

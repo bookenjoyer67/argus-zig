@@ -253,3 +253,29 @@ pub export fn zig_api_config(out: [*]u8, max: u32) callconv(.c) u32 {
     b.add("}}", .{});
     return @intCast(b.len);
 }
+
+/// /api/history — read last N KB of the SD card detection log and return
+/// as a JSON array of raw CSV lines (client-parsed for date/kind filtering).
+pub export fn zig_api_history(buf: [*]u8, buf_len: u32) callconv(.c) u32 {
+    var b = Buf{ .data = buf[0..buf_len] };
+    b.add("[", .{});
+
+    var sd_buf: [4096]u8 = undefined;
+    const path: [14:0]u8 = "detections.csv".*;
+    const n = main.board.storageRead(&path, &sd_buf, sd_buf.len);
+    if (n > 0) {
+        const data = sd_buf[0..@intCast(n)];
+        var lines = std.mem.splitScalar(u8, data, '\n');
+        var first: bool = true;
+        while (lines.next()) |line| {
+            const trimmed = std.mem.trim(u8, line, " \t\r");
+            if (trimmed.len == 0) continue;
+            if (!first) b.add(",", .{});
+            first = false;
+            b.addStr(trimmed);
+        }
+    }
+
+    b.add("]", .{});
+    return @intCast(b.len);
+}

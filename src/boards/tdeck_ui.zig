@@ -9,6 +9,7 @@ const std = @import("std");
 const main = @import("../main.zig");
 const scanner = @import("../scanner.zig");
 const display = @import("../display.zig");
+const config = @import("../config.zig");
 const st7789 = @import("../hal/st7789.zig");
 const g = @import("../hal/gfx.zig").Gfx(st7789);
 
@@ -26,7 +27,7 @@ const kindStr = display.kindStr;
 const scoreLevel = display.scoreLevel;
 
 /// Views cycled by keys 1-7 / trackball. See drawPage().
-pub const NUM_PAGES: u8 = 7;
+pub const NUM_PAGES: u8 = 9;
 
 // ---- Palette (RGB565, converted from web/dashboard.html) ----
 const ACCENT: u16 = 0x1FF3; // #1eff9d emerald — titles, "clear", GPS fix, battery ok
@@ -135,6 +136,10 @@ fn header(title: []const u8, page: u8) void {
     clear();
     col(ACCENT);
     drawStrScaled(8, 6, title, 3);
+    if (main.audio_muted) {
+        col(CORRUPT);
+        drawStrScaled(220, 12, "[M]", 2);
+    }
     col(MUTED);
     var pb: [8]u8 = undefined;
     const ps = std.fmt.bufPrint(&pb, "{d}/{d}", .{ page + 1, NUM_PAGES }) catch "";
@@ -239,6 +244,12 @@ fn fmtU(n: u32) []const u8 {
 /// View 1 — Surveillance list.
 fn drawSurv() void {
     header("SURVEIL", 1);
+    if (main.label_mode and main.label_view_kind == 1) {
+        col(MUTED);
+        drawStrScaled(8, 200, "1=CONF 2=FALSE 3=UNKN 4=MUNI 5=PRIV 0=clr", 1);
+    }
+    const scroll: u8 = if (main.label_mode and main.label_view_kind == 1) 0 else main.page_scroll;
+    var skipped: u8 = 0;
     var row: u8 = 0;
     var i: usize = main.tracker_count;
     while (i > 0 and row < 8) {
@@ -247,17 +258,26 @@ fn drawSurv() void {
             .flock_camera, .drone, .raven, .camera => {},
             else => continue,
         }
+        if (skipped < scroll) { skipped += 1; continue; }
         const y: u16 = 48 + @as(u16, row) * 23;
-        var buf: [44]u8 = undefined;
+        const selected = main.label_mode and main.label_view_kind == 1 and (skipped + row) == main.label_cursor;
+        var buf: [50]u8 = undefined;
         var mbuf: [8]u8 = undefined;
         var abuf: [8]u8 = undefined;
+        if (selected) {
+            col(ACCENT);
+            drawStrScaled(2, y, ">", 2);
+        }
         col(kindColor(main.trackers[i].kind));
-        const s = std.fmt.bufPrint(&buf, "{s} {s} {d} {s} {s}", .{
+        const ovr = if (main.lookupOverride(main.trackers[i].mac) != null) " [OVR]" else "";
+        const s = std.fmt.bufPrint(&buf, "{s} {s} {d} {s} {s}{s}{s}", .{
             kindStr(main.trackers[i].kind),  mac2(i, &mbuf),
             main.trackers[i].rssi,           scoreLevel(main.trackers[i].score),
             ageStr(main.trackers[i].last_seen, &abuf),
+            if (main.trackers[i].tag != 0) main.tagLabel(main.trackers[i].tag) else "",
+            ovr,
         }) catch continue;
-        drawStrScaled(8, y, s, 2);
+        drawStrScaled(if (selected) 16 else 8, y, s, 2);
         row += 1;
     }
     if (scanner.stingray_alert_active and row < 8) {
@@ -365,6 +385,7 @@ fn drawHistory() void {
 /// View 4 — Consumer trackers list.
 fn drawTrackers() void {
     header("TRACKERS", 4);
+    var skipped: u8 = 0;
     var row: u8 = 0;
     var i: usize = main.tracker_count;
     while (i > 0 and row < 8) {
@@ -373,6 +394,7 @@ fn drawTrackers() void {
             .airtag, .tile, .samsung, .findmy => {},
             else => continue,
         }
+        if (skipped < main.page_scroll) { skipped += 1; continue; }
         const y: u16 = 48 + @as(u16, row) * 23;
         var buf: [40]u8 = undefined;
         var mbuf: [8]u8 = undefined;
@@ -395,6 +417,12 @@ fn drawTrackers() void {
 /// View 5 — All OUI-matched devices.
 fn drawDevices() void {
     header("DEVICES", 5);
+    if (main.label_mode and main.label_view_kind == 5) {
+        col(MUTED);
+        drawStrScaled(8, 200, "1=CONF 2=FALSE 3=UNKN 4=MUNI 5=PRIV 0=clr", 1);
+    }
+    const scroll: u8 = if (main.label_mode and main.label_view_kind == 5) 0 else main.page_scroll;
+    var skipped: u8 = 0;
     var row: u8 = 0;
     var total: u32 = 0;
     var i: usize = main.tracker_count;
@@ -402,14 +430,24 @@ fn drawDevices() void {
         i -= 1;
         if (main.trackers[i].methods & scanner.METHOD_OUI == 0) continue;
         total += 1;
+        if (skipped < scroll) { skipped += 1; continue; }
         if (row >= 7) continue;
         const y: u16 = 48 + @as(u16, row) * 23;
+        const selected = main.label_mode and main.label_view_kind == 5 and (skipped + row) == main.label_cursor;
         const name = main.vendorName(main.trackers[i].mac) orelse "Unknown";
         const nshow = if (name.len > 14) name[0..14] else name;
-        var buf: [40]u8 = undefined;
+        var buf: [50]u8 = undefined;
+        if (selected) {
+            col(ACCENT);
+            drawStrScaled(2, y, ">", 2);
+        }
         col(kindColor(main.trackers[i].kind));
-        const s = std.fmt.bufPrint(&buf, "{s} {d}", .{ nshow, main.trackers[i].rssi }) catch continue;
-        drawStrScaled(8, y, s, 2);
+        const ovr = if (main.lookupOverride(main.trackers[i].mac) != null) " [OVR]" else "";
+        const s = std.fmt.bufPrint(&buf, "{s} {d}{s}{s}", .{ nshow, main.trackers[i].rssi,
+            if (main.trackers[i].tag != 0) main.tagLabel(main.trackers[i].tag) else "",
+            ovr,
+        }) catch continue;
+        drawStrScaled(if (selected) 16 else 8, y, s, 2);
         row += 1;
     }
     col(MUTED);
@@ -456,6 +494,166 @@ fn drawSystem() void {
     update();
 }
 
+/// View 7 — Detection playback (scrollable history log).
+fn drawHistoryPlayback() void {
+    header("PLAYBACK", 7);
+    // Filter + sort indicator
+    col(MUTED);
+    var fbuf: [40]u8 = undefined;
+    const fltr = switch (main.history_filter) {
+        1 => "FLOCK",
+        2 => "DRONE",
+        3 => "RAVEN",
+        4 => "CAMERA",
+        5 => "TRACKER",
+        else => "ALL",
+    };
+    const srt = if (main.history_sort == 0) "time" else "score";
+    _ = std.fmt.bufPrint(&fbuf, "{s} / {s}  f/d/r/c/t/a  s=sort", .{ fltr, srt }) catch {};
+    drawStr(8, 38, &fbuf);
+
+    // Collect filtered entries into a list (up to main.HISTORY_MAX).
+    // Walk from newest (history_write-1) backwards.
+    var filtered: [64]u16 = undefined; // indices into history[]
+    var fcount: u16 = 0;
+    const count = if (main.history_count < main.HISTORY_MAX) main.history_count else main.HISTORY_MAX;
+    var n: usize = 0;
+    while (n < count) : (n += 1) {
+        const idx = (main.history_write + main.HISTORY_MAX - 1 - n) % main.HISTORY_MAX;
+        const e = main.history[idx];
+        // Filter
+        const match = switch (main.history_filter) {
+            1 => e.kind == .flock_camera,
+            2 => e.kind == .drone,
+            3 => e.kind == .raven,
+            4 => e.kind == .camera,
+            5 => switch (e.kind) { .airtag, .tile, .samsung, .findmy => true, else => false },
+            else => true,
+        };
+        if (!match) continue;
+        if (fcount < 64) {
+            filtered[fcount] = @intCast(idx);
+            fcount += 1;
+        }
+    }
+
+    // Sort by score if requested (stable: preserve time order within same score).
+    if (main.history_sort == 1 and fcount > 1) {
+        var swapped = true;
+        while (swapped) {
+            swapped = false;
+            var j: u16 = 1;
+            while (j < fcount) : (j += 1) {
+                if (main.history[filtered[j]].score > main.history[filtered[j - 1]].score) {
+                    const tmp = filtered[j];
+                    filtered[j] = filtered[j - 1];
+                    filtered[j - 1] = tmp;
+                    swapped = true;
+                }
+            }
+        }
+    }
+
+    // Clamp scroll
+    if (main.history_scroll >= fcount and fcount > 0) {
+        main.history_scroll = fcount - 1;
+    }
+
+    // Draw up to 8 rows starting at scroll offset.
+    var row: u8 = 0;
+    var r: u16 = main.history_scroll;
+    while (r < fcount and row < 8) : ({
+        r += 1;
+        row += 1;
+    }) {
+        const e = main.history[filtered[r]];
+        const y: u16 = 48 + @as(u16, row) * 23;
+        var buf: [50]u8 = undefined;
+        col(kindColor(e.kind));
+        const s = std.fmt.bufPrint(&buf, "{s} {X:0>2}:{X:0>2} {d} {s}{s}", .{
+            kindStr(e.kind),
+            e.mac[0], e.mac[1],
+            e.rssi,
+            scoreLevel(e.score),
+            if (e.tag != 0) main.tagLabel(e.tag) else "",
+        }) catch continue;
+        drawStrScaled(8, y, s, 2);
+    }
+
+    if (fcount == 0) {
+        col(MUTED);
+        drawStrScaled(8, 110, "No matching entries", 2);
+    }
+
+    // Scroll position indicator
+    if (fcount > 8) {
+        col(MUTED);
+        var sbuf: [24]u8 = undefined;
+        _ = std.fmt.bufPrint(&sbuf, "{d}-{d}/{d}", .{ main.history_scroll + 1, @min(main.history_scroll + 8, fcount), fcount }) catch {};
+        drawStrScaled(200, 214, &sbuf, 2);
+    }
+
+    update();
+}
+
+/// View 8 — Settings (read-only config viewer).
+fn drawSettings() void {
+    header("SETTINGS", 8);
+
+    // Name
+    var name_buf: [32]u8 = undefined;
+    const name: [*:0]const u8 = "name";
+    const name_val = config.get(name, &name_buf);
+    col(if (main.settings_cursor == 0) ACCENT else MUTED);
+    drawStrScaled(8, 48, "Name:", 2);
+    col(if (main.settings_cursor == 0) TEXT else MUTED);
+    drawStrScaled(80, 48, if (name_val.len > 0) name_val else "-", 2);
+
+    // Role
+    var role_buf: [8]u8 = undefined;
+    const role: [*:0]const u8 = "role";
+    const role_val = config.get(role, &role_buf);
+    col(if (main.settings_cursor == 1) ACCENT else MUTED);
+    drawStrScaled(8, 76, "Role:", 2);
+    col(if (main.settings_cursor == 1) TEXT else MUTED);
+    drawStrScaled(80, 76, if (role_val.len > 0) role_val else "mobile", 2);
+
+    // WiFi SSID
+    var ssid_buf: [32]u8 = undefined;
+    const ssid: [*:0]const u8 = "ssid";
+    const ssid_val = config.get(ssid, &ssid_buf);
+    col(if (main.settings_cursor == 2) ACCENT else MUTED);
+    drawStrScaled(8, 104, "WiFi:", 2);
+    col(if (main.settings_cursor == 2) TEXT else MUTED);
+    drawStrScaled(80, 104, if (ssid_val.len > 0) ssid_val else "-", 2);
+
+    // Location
+    var lat_buf: [16]u8 = undefined;
+    var lon_buf: [16]u8 = undefined;
+    const latk: [*:0]const u8 = "lat";
+    const lonk: [*:0]const u8 = "lon";
+    const lat_val = config.get(latk, &lat_buf);
+    const lon_val = config.get(lonk, &lon_buf);
+    col(if (main.settings_cursor == 3) ACCENT else MUTED);
+    drawStrScaled(8, 132, "Lat:", 2);
+    col(if (main.settings_cursor == 3) TEXT else MUTED);
+    drawStrScaled(80, 132, if (lat_val.len > 0) lat_val else "-", 2);
+    col(if (main.settings_cursor == 4) ACCENT else MUTED);
+    drawStrScaled(8, 160, "Lon:", 2);
+    col(if (main.settings_cursor == 4) TEXT else MUTED);
+    drawStrScaled(80, 160, if (lon_val.len > 0) lon_val else "-", 2);
+
+    // Firmware
+    col(MUTED);
+    drawStrScaled(8, 200, "FW: " ++ main.FIRMWARE_VERSION, 2);
+
+    // Navigation hint
+    col(MUTED);
+    drawStrScaled(8, 222, "TB=nav  s=exit  web: setup", 1);
+
+    update();
+}
+
 /// Route to the current view.
 pub fn drawPage() void {
     switch (display.current_page) {
@@ -466,6 +664,8 @@ pub fn drawPage() void {
         4 => drawTrackers(),
         5 => drawDevices(),
         6 => drawSystem(),
+        7 => drawHistoryPlayback(),
+        8 => drawSettings(),
         else => drawDashboard(),
     }
 }

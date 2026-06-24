@@ -35,6 +35,27 @@ pub fn alert(score: u8) void {
     _ = score;
 }
 
+/// Per-detection alert — no-op on Heltec (no speaker).
+pub fn alertKind(kind: display.TrackerType, score: u8) void {
+    _ = kind;
+    _ = score;
+}
+
+/// Storage append — no-op on Heltec (no SD card).
+pub fn storageAppend(path: [*:0]const u8, line: [*:0]const u8) i32 {
+    _ = path;
+    _ = line;
+    return -1;
+}
+
+/// Storage read — no-op on Heltec.
+pub fn storageRead(path: [*:0]const u8, buf: [*]u8, max: u32) i32 {
+    _ = path;
+    _ = buf;
+    _ = max;
+    return -1;
+}
+
 /// PRG-button gesture FSM (was inline in zig_main). Blocking/timing-based:
 /// debounce → hold (>=1.2s CSV dump, >=15s also clear) → else 350ms
 /// double-press window (double = stealth, single = next page). Drives the
