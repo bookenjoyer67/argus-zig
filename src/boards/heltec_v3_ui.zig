@@ -352,6 +352,9 @@ fn drawStats() void {
     oledClear();
     drawPageNum(5);
     oledDrawStr(0, 0, "STATS");
+    // Sample WiFi counter before I2C OLED update — display bus activity
+    // creates EMI that the WiFi radio interprets as phantom frames.
+    const wifi_frames = main.wifi_get_frame_count();
 
     const uptime_sec = main.tick_ms / 1000;
     oledDrawStr(0, 14, "Up:");
@@ -363,7 +366,7 @@ fn drawStats() void {
     oledDrawInt(48, 24, @intCast(main.tracker_count));
 
     oledDrawStr(0, 34, "WiFi:");
-    oledDrawInt(48, 34, @intCast(main.wifi_get_frame_count()));
+    oledDrawInt(48, 34, @intCast(wifi_frames));
 
     oledDrawStr(0, 44, "Bat:");
     const mv = main.battery_read_mv();

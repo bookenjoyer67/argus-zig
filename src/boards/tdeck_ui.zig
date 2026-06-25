@@ -463,6 +463,9 @@ fn drawSystem() void {
     const mv = main.battery_read_mv();
     const v = @as(u32, @intCast(mv));
     const up = main.tick_ms / 1000;
+    // Sample WiFi counter before rendering — display SPI EMI generates
+    // phantom 802.11 frames that inflate the live counter mid-draw.
+    const wifi_frames = main.wifi_get_frame_count();
 
     col(TEXT);
     drawStrScaled(8, 48, "FW v" ++ main.FIRMWARE_VERSION, 2);
@@ -494,7 +497,7 @@ fn drawSystem() void {
 
     col(TEXT);
     var wbuf: [24]u8 = undefined;
-    drawStrScaled(8, 188, std.fmt.bufPrint(&wbuf, "WiFi {d} frm", .{main.wifi_get_frame_count()}) catch "", 2);
+    drawStrScaled(8, 188, std.fmt.bufPrint(&wbuf, "WiFi {d} frm", .{wifi_frames}) catch "", 2);
 
     // Drop counters
     var drop_buf: [32]u8 = undefined;
